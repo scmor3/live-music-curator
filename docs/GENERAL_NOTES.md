@@ -1,7 +1,7 @@
 # General Notes (high level)
 
 What?  
-A web app that generates a Spotify playlist of artists performing on a selected date in a particular user's spotify account.
+A web app that generates a Spotify playlist for the user of artists performing on a selected date in a selected city.
 
 Why?  
 I want to have a simple passive way of exploring what live music is available in a given place on a given date. Other solutions don't solve this in the way I want. Some other solutions include:
