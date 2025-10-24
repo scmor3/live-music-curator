@@ -34,11 +34,13 @@ What are **core nouns** that can contain groups of nouns (fields)?
     * unique spotify id `spotify_artist_id`
     * Confidence score - based on popularity score and spelling of results `confidence_score`
 
-### Slightly more formalized
+### Slightly more formalized (adding more fields as we go)
 3 tables:  
 1. `users` - stores one row for every person using the app
     * `id` - primary key to identify each user
     * `display_name` - Their display name on Spotify or their chosen username for the app
+    * `email` - user's email they use for spotify
+    * `profile_picture` - user's profile picture they use for spotify if any
     * `spotify_id` - a user's id unique to their spotify profile
     * `refresh_token` - used to get an access token for spotify authorization
     * other credentials...
