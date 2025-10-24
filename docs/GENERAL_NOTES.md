@@ -45,3 +45,4 @@ Potential future features:
 * could save API calls by only creating a playlist once for a given city and date and having other users that ask for that playlist to follow the existing playlist rather than create a new one in their account. The playlist may need to be updated if a new user requests it on a date after the date of its original creation.
 * Query multiple APIs to aggregate live shows in a particular city e.g. Songkick *and* bandsintown
 * Users can subscribe to a particular city and just get a playlist made every day or weekend or whatever
+* connect fans to artists somehow - maybe through location sharing during concerts to build 'points' with the artist and get free merch or something

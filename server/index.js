@@ -2,12 +2,14 @@ const express = require('express')
 const querystring = require('querystring');
 const axios = require('axios');
 const cookieParser = require('cookie-parser');
+const postgres = require('postgres');
 require('dotenv').config();
 
 // 3. App & Middleware Configuration
 const app = express()
 const port = 3000
 app.use(express.json());
+app.use(cookieParser());
 
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
@@ -84,23 +86,25 @@ if (state === null || state !== storedState) {
       const refreshToken = response.data.refresh_token;
 
       // TODO (Next Steps):
-      // 1. Use the accessToken to call Spotify's /me endpoint to get user info.
-      // This code replaces the temporary res.json(...)
-      
-      // 1. Use the accessToken to call Spotify's /me endpoint
+      //Use the accessToken to call Spotify's /me endpoint
       const userProfileResponse = await axios.get('https://api.spotify.com/v1/me', {
         headers: {
           'Authorization': `Bearer ${accessToken}`
         }
       });
-
-      // 2. Get the user's info from the response
+      //Get the user's info from the response
       const spotifyId = userProfileResponse.data.id;
       const displayName = userProfileResponse.data.display_name;
       const email = userProfileResponse.data.email;
       const profilePic = userProfileResponse.data.images[0]?.url; // Get the first profile image, if it exists
-
-      // TODO (Next Steps):
+      //App & Middleware Configuration
+      const sql = postgres({
+        host      : process.env.DB_HOST,
+        port      : process.env.DB_PORT,
+        database  : process.env.DB_NAME,
+        username  : process.env.DB_USER,
+        password  : process.env.DB_PASS
+      });
       // 2. Find or create that user in our database.
 
 
