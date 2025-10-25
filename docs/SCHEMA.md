@@ -61,8 +61,10 @@ What are **core nouns** that can contain groups of nouns (fields)?
 #### Column rules:
 1. `users`
     * `id` - data type: SERIAL
-    * `display_name` - data type: VARCHAR(255) constraints: NOT NULL
     * `spotify_id` - data type: VARCHAR(255) constraints: NOT NULL, UNIQUE
+    * `display_name` - data type: VARCHAR(255) constraints: NOT NULL
+    * `email` - data type: VARCHAR(255) constraints: NOT NULL, UNIQUE
+    * `profile_picture` - data type: VARCHAR(255)
     * `refresh_token` - data type: TEXT, constraints: NOT NULL
 2. 
     * `id` - data type: SERIAL
