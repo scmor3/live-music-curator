@@ -46,3 +46,5 @@ Potential future features:
 * Query multiple APIs to aggregate live shows in a particular city e.g. Songkick *and* bandsintown
 * Users can subscribe to a particular city and just get a playlist made every day or weekend or whatever
 * connect fans to artists somehow - maybe through location sharing during concerts to build 'points' with the artist and get free merch or something
+* build out the venue playlists… their social manager may be convinced to sponsor an auto updating playlist for their venue.
+* Use LLMs to gather smaller venue events

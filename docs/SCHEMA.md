@@ -54,27 +54,27 @@ What are **core nouns** that can contain groups of nouns (fields)?
 3. `curated_artists` - stores one row for every artist found in every search
     * `id` - primary key to identify each artist entry
     * `curation_request_id` - foreign key that links back to the `curation_requests` table
-    *  `artist_name_raw` - the artist name in raw text
+    * `artist_name_raw` - the artist name in raw text
     * `spotify_artist_id` - corrensponding unique id for artist on Spotify
     * `confidence_score` - the result of our matching logic
 
 #### Column rules:
 1. `users`
-    * `id` - data type: SERIAL
+    * `id` - data type: SERIAL constraints: PRIMARY KEY
     * `spotify_id` - data type: VARCHAR(255) constraints: NOT NULL, UNIQUE
     * `display_name` - data type: VARCHAR(255) constraints: NOT NULL
     * `email` - data type: VARCHAR(255) constraints: NOT NULL, UNIQUE
     * `profile_picture` - data type: VARCHAR(255)
     * `refresh_token` - data type: TEXT, constraints: NOT NULL
-2. 
-    * `id` - data type: SERIAL
+2. `curation_requests`
+    * `id` - data type: constraints: SERIAL PRIMARY KEY
     * `user_id` - data type: INT constraint: FOREIGN KEY
     * `search_city` - data type: VARCHAR(255) constraints: NOT NULL
     * `search_date` - data type: DATE constraints: NOT NULL
     * `number_of_songs` - data type: INT constraints: NOT NULL
     * `playlist_id` - data type: TEXT constraint: UNIQUE
 3. `curated_artists`
-    * `id` - data type: SERIAL
+    * `id` - data type: SERIAL constraints: PRIMARY KEY
     * `curation_request_id` - data type: INT constraint: FOREIGN KEY
     * `artist_name_raw` - data type: VARCHAR(255) constraing: NOT NULL
     * `spotify_artist_id` - data type: TEXT
