@@ -3,6 +3,7 @@ const querystring = require('querystring');
 const axios = require('axios');
 const cookieParser = require('cookie-parser');
 const postgres = require('postgres');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 // 3. App & Middleware Configuration
@@ -10,6 +11,13 @@ const app = express()
 const port = 3000
 app.use(express.json());
 app.use(cookieParser());
+const sql = postgres({
+  host      : process.env.DB_HOST,
+  port      : Number(process.env.DB_PORT),
+  database  : process.env.DB_NAME,
+  user      : process.env.DB_USER,
+  password  : process.env.DB_PASS
+});
 
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
@@ -85,7 +93,6 @@ if (state === null || state !== storedState) {
       const accessToken = response.data.access_token;
       const refreshToken = response.data.refresh_token;
 
-      // TODO (Next Steps):
       //Use the accessToken to call Spotify's /me endpoint
       const userProfileResponse = await axios.get('https://api.spotify.com/v1/me', {
         headers: {
@@ -96,40 +103,52 @@ if (state === null || state !== storedState) {
       const spotifyId = userProfileResponse.data.id;
       const displayName = userProfileResponse.data.display_name;
       const email = userProfileResponse.data.email;
-      const profilePic = userProfileResponse.data.images[0]?.url; // Get the first profile image, if it exists
-      //App & Middleware Configuration
-      const sql = postgres({
-        host      : process.env.DB_HOST,
-        port      : process.env.DB_PORT,
-        database  : process.env.DB_NAME,
-        username  : process.env.DB_USER,
-        password  : process.env.DB_PASS
+      const profilePicture = userProfileResponse.data.images[0]?.url; // Get the first profile image, if it exists
+      // Find or create that user in our database.
+      const userResult = await sql`
+        INSERT INTO users (
+          spotify_id, 
+          display_name, 
+          email, 
+          profile_picture, 
+          refresh_token
+        )
+        VALUES (
+          ${spotifyId}, 
+          ${displayName}, 
+          ${email}, 
+          ${profilePicture}, 
+          ${refreshToken}
+        )
+        ON CONFLICT (spotify_id) 
+        DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          email = EXCLUDED.email,
+          profile_picture = EXCLUDED.profile_picture,
+          refresh_token = EXCLUDED.refresh_token
+        RETURNING id;
+      `;
+
+      // Get the user's unique ID from our database
+      const userId = userResult[0].id;
+
+      // Create a secure session token (JWT)
+      const payload = { userId: userId };
+      const secret = process.env.JWT_SECRET;
+      const options = { expiresIn: '1h' }; // The token will expire in 1 hour
+
+      const token = jwt.sign(payload, secret, options);
+
+      // Send the token to the user as a secure, HttpOnly cookie
+      res.cookie('token', token, {
+        httpOnly: true, // Makes it invisible to client-side JavaScript
+        maxAge: 60 * 60 * 1000, // 1 hour in milliseconds (must match the token's 'expiresIn')
+        // **We'll add 'secure: true' later for production (HTTPS)**
       });
-      // 2. Find or create that user in our database.
+      console.log(`User ${userId} logged in successfully.`);
 
-
-      // 3. Save the encrypted refreshToken to the database for that user.
-
-
-      // 4. Create a session for the user (e.g., using a JWT).
-
-
-      // 5. Redirect the user to the frontend application (e.g., res.redirect('http://localhost:3001/dashboard')).
-
-      // For now, let's just send back the user info to prove it worked
-      res.json({
-        message: "Successfully logged in and fetched profile!",
-        user: {
-          spotifyId: spotifyId,
-          displayName: displayName,
-          email: email,
-          profilePic: profilePic
-        },
-        tokens: {
-          access_token: accessToken,
-          refresh_token: refreshToken
-        }
-});
+      // Redirect the user to the frontend application
+      res.redirect('http://localhost:3001/');
 
     } catch (error) {
       console.error('Error exchanging tokens:', error.response ? error.response.data : error.message);

@@ -48,3 +48,4 @@ Potential future features:
 * connect fans to artists somehow - maybe through location sharing during concerts to build 'points' with the artist and get free merch or something
 * build out the venue playlists… their social manager may be convinced to sponsor an auto updating playlist for their venue.
 * Use LLMs to gather smaller venue events
+* have playlists created that day show up around the front page for users to follow if they want
