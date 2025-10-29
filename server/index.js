@@ -163,84 +163,106 @@ app.get('/api/callback', async (req, res) => {
 
 
 app.post('/api/playlists', async (req, res) => {
+  // --- 1. AUTHENTICATION & VERIFICATION ---
   const token = req.cookies.token; // check for the JWT token in cookies
   if (!token) {
     return res.status(401).json({ error: 'No token provided. Access denied.' });
-}
+  }
   let userId; // declare before try statement so we can use it when we leave the block
   try {
     // Will throw an error if the token is expired or the signature is bad
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     // If we get here, the token is valid
     userId = payload.userId;
-    
   } catch (error) {
     // If verification fails, send a 401 Unauthorized error
     return res.status(401).json({ error: 'Access denied. Invalid token.' });
   }
   console.log(`User ${userId} is authenticated and is creating a playlist.`);
-
-  // TODO: main workflow for creating and populating a playlist goes here
-  // get user's refresh token from database.
-  const userResult = await sql`
-    SELECT refresh_token FROM users WHERE id = ${userId};
-  `;
-  if (userResult.length === 0) {
-    return res.status(404).json({ error: 'User not found in database.' });
-  }
-  const refreshToken = userResult[0].refresh_token;
-  // Use the refresh token to get a new access token from Spotify.
-  let accessToken; // <-- Declare it out here, just like we did with userId
+  // --- 2. MAIN BUSINESS LOGIC (with a safety net) ---
   try {
-    const authHeader = 'Basic ' + (Buffer.from(CLIENT_ID + ':' + CLIENT_SECRET).toString('base64'));
-    
-    const params = new URLSearchParams();
-    params.append('grant_type', 'refresh_token');
-    params.append('refresh_token', refreshToken);
-
-    const response = await axios.post('https://accounts.spotify.com/api/token', params, {
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        'Authorization': authHeader
-      }
-    });
-
-    accessToken = response.data.access_token;
-    const newRefreshToken = response.data.refresh_token;
-    if (newRefreshToken) {
-      console.log('New refresh token received. Updating database...');
-      await sql`
-      UPDATE users SET refresh_token = ${newRefreshToken} WHERE id = ${userId};
+    // get user's refresh token from database.
+    const userResult = await sql`
+      SELECT refresh_token, spotify_id FROM users WHERE id = ${userId};
     `;
+    if (userResult.length === 0) {
+      return res.status(404).json({ error: 'User not found in database.' });
     }
+    const refreshToken = userResult[0].refresh_token;
+    const spotifyId = userResult[0].spotify_id;
+    // Use the refresh token to get a new access token from Spotify.
+    let accessToken;
+    try {
+      const authHeader = 'Basic ' + (Buffer.from(CLIENT_ID + ':' + CLIENT_SECRET).toString('base64'));
+      
+      const params = new URLSearchParams();
+      params.append('grant_type', 'refresh_token');
+      params.append('refresh_token', refreshToken);
 
+      const response = await axios.post('https://accounts.spotify.com/api/token', params, {
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'Authorization': authHeader
+        }
+      });
+
+      accessToken = response.data.access_token;
+      const newRefreshToken = response.data.refresh_token;
+      if (newRefreshToken) {
+        console.log('New refresh token received. Updating database...');
+        await sql`
+        UPDATE users SET refresh_token = ${newRefreshToken} WHERE id = ${userId};
+      `;
+      }
+
+    } catch (error) {
+      // This is a critical error. The user's refresh_token might be bad.
+      console.error('Error refreshing token:', error.response ? error.response.data : error.message);
+      // We need to tell the user they are unauthorized
+      return res.status(401).json({ error: 'Failed to refresh token. Please log in again.' });
+    }
+    console.log('Successfully refreshed access token.');
+
+    console.log('Data received in request body:', req.body);
+    const { city, date, artists } = req.body;
+    const playlistData = {
+    // Create an empty playlist on Spotify.
+    name: `${city} ${date} live music`,
+    description: `Artists performing in ${city} on ${date}, curated by Live Music Curator.`,
+    public: true
+    };
+    const axiosConfig = {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    };
+    const createPlaylistResponse = await axios.post(
+      `https://api.spotify.com/v1/users/${spotifyId}/playlists`,
+      playlistData,
+      axiosConfig
+    );
+    // Loop through artistList.
+
+    // Search for each artist.
+
+    // Add tracks to the playlist.
+
+    // Save the results to our database.
+    const playlistId = createPlaylistResponse.data.id;
+    console.log(`Successfully created new playlist with ID: ${playlistId}`);
+    res.json({
+      message: 'Successfully created playlist!',
+      playlistId: playlistId
+    });
   } catch (error) {
-    // This is a critical error. The user's refresh_token might be bad.
-    console.error('Error refreshing token:', error.response ? error.response.data : error.message);
-    // We need to tell the user they are unauthorized
-    return res.status(401).json({ error: 'Failed to refresh token. Please log in again.' });
+    // This is the "main" safety net.
+    // It catches errors from the database SELECT, or the playlist POST
+    console.error('Error in main playlist creation logic:', error.message);
+    return res.status(500).json({ error: 'Internal server error.' });
   }
-
-  // --- If we are here, we have a new, valid accessToken! ---
-  console.log('Successfully refreshed access token.');
-
-  // NOW... what is the first thing we need to *do* with this new accessToken
-  // and the artistList we got from the user?
-  // Create an empty playlist on Spotify.
-
-  // Loop through artistList.
-
-  // Search for each artist.
-
-  // Add tracks to the playlist.
-
-  // Save the results to our database.
-  console.log('Data received in request body:', req.body);
-  const artistList = req.body.artists;
-  res.json({ 
-    message: 'Successfully received artist list!',
-    receivedData: artistList 
-  });
+  
+  
 });
 
 
