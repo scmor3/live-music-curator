@@ -4,6 +4,7 @@ const axios = require('axios');
 const cookieParser = require('cookie-parser');
 const postgres = require('postgres');
 const jwt = require('jsonwebtoken');
+const levenshtein = require('fast-levenshtein');
 require('dotenv').config();
 
 // 3. App & Middleware Configuration
@@ -251,6 +252,80 @@ app.post('/api/playlists', async (req, res) => {
     // Save the results to our database.
     const playlistId = createPlaylistResponse.data.id;
     console.log(`Successfully created new playlist with ID: ${playlistId}`);
+    for (const artistName of artists) {
+      try {
+        const searchResponse = await axios.get(
+          `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+          }
+        );
+        const potentialMatches = searchResponse.data.artists.items;
+        if (potentialMatches.length === 0) {
+          console.log(`No Spotify results found for "${artistName}". Skipping.`);
+          continue;
+        }
+        // 3. Find the best match
+        let bestMatch = null;
+
+        for (const match of potentialMatches) {
+          if (match.name.toLowerCase() === artistName.toLowerCase()) {
+            bestMatch = match;
+            console.log(`Exact match found for "${artistName}": ${bestMatch.name} (ID: ${bestMatch.id})`);
+            break;
+          }
+        }
+        // 4. Check if we found an exact match
+        if (bestMatch) {
+          const spotifyArtistId = bestMatch.id;
+          const confidenceScore = 100.00;
+          
+          // TODO: Get top tracks for this spotifyArtistId
+          // TODO: Add tracks to playlistId
+          // TODO: Record this successful match (artistName, spotifyArtistId, confidenceScore) for saving later
+          
+        } else {
+          console.log(`No exact match for "${artistName}". Need to check similarity.`);
+          let closestMatch = null;
+          let minDistance = Infinity;
+
+          for (const match of potentialMatches) {
+            const distance = levenshtein.get(artistName.toLowerCase(), match.name.toLowerCase());
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestMatch = match;
+            }
+          }
+          const SIMILARITY_THRESHOLD = 3;
+
+          if (closestMatch && minDistance <= SIMILARITY_THRESHOLD) {
+            // We found a reasonably close match!
+            bestMatch = closestMatch; // Assign it to bestMatch
+            const confidenceScore = 100.00 - (minDistance * 10); // Simple score: less distance = higher score
+            
+            console.log(`Closest match found for "${artistName}": ${bestMatch.name} (ID: ${bestMatch.id}), Distance: ${minDistance}, Score: ${confidenceScore}`);
+
+            const spotifyArtistId = bestMatch.id;
+            
+            // TODO: Get top tracks for this spotifyArtistId
+            // TODO: Add tracks to playlistId
+            // TODO: Record this successful match (artistName, spotifyArtistId, confidenceScore) for saving later
+
+          } else {
+            console.log(`No sufficiently close match found for "${artistName}". Closest was "${closestMatch?.name}" with distance ${minDistance}. Skipping.`);
+            // TODO: Record this failed match (artistName, null, 0) for saving later
+          }
+      // --- END: No exact match logic ---
+          // TODO: Record this failed match (artistName, null, 0) for saving later
+        }
+
+        // ... continue to the next artist ...
+      } catch (error) {
+        // Catch errors *specific* to this artist's search/processing
+        console.error(`Error processing artist "${artistName}":`, error.message);
+        // Continue to the next artist even if one fails
+        continue; 
+      }
+    }
     res.json({
       message: 'Successfully created playlist!',
       playlistId: playlistId
@@ -261,9 +336,8 @@ app.post('/api/playlists', async (req, res) => {
     console.error('Error in main playlist creation logic:', error.message);
     return res.status(500).json({ error: 'Internal server error.' });
   }
-  
-  
 });
+
 
 
 
