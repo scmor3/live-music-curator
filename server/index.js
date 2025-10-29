@@ -103,8 +103,8 @@ app.get('/api/callback', async (req, res) => {
       //Get the user's info from the response
       const spotifyId = userProfileResponse.data.id;
       const displayName = userProfileResponse.data.display_name;
-      const email = userProfileResponse.data.email;
-      const profilePicture = userProfileResponse.data.images[0]?.url; // Get the first profile image, if it exists
+      const email = userProfileResponse.data.email || null;
+      const profilePicture = userProfileResponse.data.images[0]?.url || null;
       // Find or create that user in our database.
       const userResult = await sql`
         INSERT INTO users (
@@ -414,6 +414,6 @@ app.post('/api/playlists', async (req, res) => {
 
 
 // Start the server
-app.listen(port, ()  => {
-  console.log(`Example app listening at http://localhost:${port}`)
+app.listen(port, '0.0.0.0', ()  => {
+  console.log(`Server listening on port ${port}. Access at http://localhost:${port}`)
 })
