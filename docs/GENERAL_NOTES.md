@@ -33,7 +33,8 @@ Steps:
 3. 
 
 
-
+random to do's in the future:
+* change users.number_of_songs column in database to users.number_of_tracks
 
 Potential future features:
 * Connect with other people looking for live music in a given city

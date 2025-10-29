@@ -152,13 +152,9 @@ app.get('/api/callback', async (req, res) => {
       res.redirect('http://localhost:3001/');
 
     } catch (error) {
-      console.error('Error exchanging tokens:', error.response ? error.response.data : error.message);
-      // If the token exchange fails, send an error.
-      res.redirect('/#' +
-        querystring.stringify({
-          error: 'invalid_token'
-        }));
-    }
+      console.error('Error during callback processing:', error.message);
+        res.status(500).send('Login failed during server processing.');
+          }
   }
 });
 
@@ -225,7 +221,7 @@ app.post('/api/playlists', async (req, res) => {
     console.log('Successfully refreshed access token.');
 
     console.log('Data received in request body:', req.body);
-    const { city, date, artists } = req.body;
+    const { city, date, artists, number_of_songs } = req.body;
     const playlistData = {
     // Create an empty playlist on Spotify.
     name: `${city} ${date} live music`,
@@ -243,15 +239,30 @@ app.post('/api/playlists', async (req, res) => {
       playlistData,
       axiosConfig
     );
-    // Loop through artistList.
-
-    // Search for each artist.
-
-    // Add tracks to the playlist.
-
     // Save the results to our database.
     const playlistId = createPlaylistResponse.data.id;
     console.log(`Successfully created new playlist with ID: ${playlistId}`);
+    const curationRequestResult = await sql`
+        INSERT INTO curation_requests (
+          user_id,
+          search_city,
+          search_date,
+          number_of_songs,
+          playlist_id
+        )
+        VALUES (
+          ${userId}, 
+          ${city}, 
+          ${date}, 
+          ${number_of_songs}, 
+          ${playlistId}
+        )
+        RETURNING id;
+      `;
+    const curationRequestId = curationRequestResult[0].id;
+
+    const curatedArtistsData = [];
+    // loop through artist
     for (const artistName of artists) {
       try {
         const searchResponse = await axios.get(
@@ -278,11 +289,32 @@ app.post('/api/playlists', async (req, res) => {
         if (bestMatch) {
           const spotifyArtistId = bestMatch.id;
           const confidenceScore = 100.00;
-          
-          // TODO: Get top tracks for this spotifyArtistId
-          // TODO: Add tracks to playlistId
-          // TODO: Record this successful match (artistName, spotifyArtistId, confidenceScore) for saving later
-          
+
+          // Get top tracks for this spotifyArtistId
+          const topTracksResponse = await axios.get(
+            `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks`, {
+              headers: { 'Authorization': `Bearer ${accessToken}` }
+            }
+          );
+          const tracksToAdd = topTracksResponse.data.tracks.slice(0, number_of_songs);
+          // get track URIs
+          const trackUris = tracksToAdd.map(track => track.uri);
+          // Add tracks to playlist
+          await axios.post(
+            `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+            { uris: trackUris },
+            {
+              headers: { 'Authorization': `Bearer ${accessToken}` }
+            }
+          );
+          console.log(`Added top tracks for "${artistName}" to playlist.`);
+          // Record this successful match (artistName, spotifyArtistId, confidenceScore) for saving later
+          curatedArtistsData.push({ 
+            curation_request_id: curationRequestId, 
+            artist_name_raw: artistName, 
+            spotify_artist_id: spotifyArtistId,
+            confidence_score: confidenceScore
+          });
         } else {
           console.log(`No exact match for "${artistName}". Need to check similarity.`);
           let closestMatch = null;
@@ -305,17 +337,40 @@ app.post('/api/playlists', async (req, res) => {
             console.log(`Closest match found for "${artistName}": ${bestMatch.name} (ID: ${bestMatch.id}), Distance: ${minDistance}, Score: ${confidenceScore}`);
 
             const spotifyArtistId = bestMatch.id;
-            
-            // TODO: Get top tracks for this spotifyArtistId
-            // TODO: Add tracks to playlistId
-            // TODO: Record this successful match (artistName, spotifyArtistId, confidenceScore) for saving later
-
+            curatedArtistsData.push({ 
+              curation_request_id: curationRequestId, 
+              artist_name_raw: artistName, 
+              spotify_artist_id: spotifyArtistId,
+              confidence_score: confidenceScore
+            });
+            // Get top tracks for this spotifyArtistId
+            const topTracksResponse = await axios.get(
+              `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks`, {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+              }
+            );
+            const tracksToAdd = topTracksResponse.data.tracks.slice(0, number_of_songs);
+            // get track URIs
+            const trackUris = tracksToAdd.map(track => track.uri);
+            // Add tracks to playlist
+            await axios.post(
+              `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+              { uris: trackUris },
+              {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+              }
+            );
+            console.log(`Added top tracks for "${artistName}" to playlist.`);
           } else {
             console.log(`No sufficiently close match found for "${artistName}". Closest was "${closestMatch?.name}" with distance ${minDistance}. Skipping.`);
-            // TODO: Record this failed match (artistName, null, 0) for saving later
+            curatedArtistsData.push({ 
+              curation_request_id: curationRequestId, 
+              artist_name_raw: artistName, 
+              spotify_artist_id: null,
+              confidence_score: 0
+            });          
           }
       // --- END: No exact match logic ---
-          // TODO: Record this failed match (artistName, null, 0) for saving later
         }
 
         // ... continue to the next artist ...
@@ -326,9 +381,26 @@ app.post('/api/playlists', async (req, res) => {
         continue; 
       }
     }
+    // Check if we actually have any data to insert
+    if (curatedArtistsData.length > 0) {
+      console.log(`Saving ${curatedArtistsData.length} curated artist results to the database...`);
+      
+      await sql`
+        INSERT INTO curated_artists ${sql(curatedArtistsData, 
+          'curation_request_id', 
+          'artist_name_raw', 
+          'spotify_artist_id', 
+          'confidence_score'
+        )}
+      `;
+      console.log('Successfully saved curated artist data.');
+    } else {
+      console.log('No artist data to save.');
+    }
+    // Send the final response to the user
     res.json({
-      message: 'Successfully created playlist!',
-      playlistId: playlistId
+      message: 'Playlist created and curation results saved!',
+      playlistId: playlistId 
     });
   } catch (error) {
     // This is the "main" safety net.
