@@ -1,9 +1,7 @@
 const express = require('express')
 const querystring = require('querystring');
 const axios = require('axios');
-const cookieParser = require('cookie-parser');
 const postgres = require('postgres');
-const jwt = require('jsonwebtoken');
 const levenshtein = require('fast-levenshtein');
 require('dotenv').config();
 
@@ -11,7 +9,6 @@ require('dotenv').config();
 const app = express()
 const port = 3000
 app.use(express.json());
-app.use(cookieParser());
 const sql = postgres({
   host      : process.env.DB_HOST,
   port      : Number(process.env.DB_PORT),
@@ -22,171 +19,16 @@ const sql = postgres({
 
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
-const REDIRECT_URI = 'http://127.0.0.1:3000/api/callback';
-
-const stateKey = 'spotify_auth_state'; // The name of the cookie we'll use to store the state
-
-const generateRandomString = (length) => {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < length; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
-};
 
 // Route definitions
 app.get('/', (req, res) => {
   res.json({ message: 'Server is up and running!' })
 })
 
-app.get('/login', function(req, res) {
-
-  const state = generateRandomString(16);
-  res.cookie(stateKey, state, { httpOnly: true });
-  const scope = 'user-read-private user-read-email playlist-modify-private playlist-modify-public';
-
-  const authUrl = 'https://accounts.spotify.com/authorize?' +
-    querystring.stringify({
-      response_type: 'code',
-      client_id: CLIENT_ID,
-      scope: scope,
-      redirect_uri: REDIRECT_URI,
-      state: state
-    });
-
-  res.redirect(authUrl);
-});
-
-/**
- * The callback route that Spotify redirects to.
- * This route will exchange the 'code' for an 'access_token'.
- */
-app.get('/api/callback', async (req, res) => {
-
-  const code = req.query.code || null;
-  const state = req.query.state || null;
-  const storedState = req.cookies ? req.cookies[stateKey] : null;
-
-
-  if (state === null || state !== storedState) {
-    res.clearCookie(stateKey); // Clear the bad cookie
-    res.redirect('/#' +
-      querystring.stringify({
-        error: 'state_mismatch'
-      }));
-  } else {
-    res.clearCookie(stateKey);
-    const authHeader = 'Basic ' + (Buffer.from(CLIENT_ID + ':' + CLIENT_SECRET).toString('base64'));
-    const params = new URLSearchParams();
-    params.append('code', code);
-    params.append('redirect_uri', REDIRECT_URI);
-    params.append('grant_type', 'authorization_code');
-    
-    try {
-      const response = await axios.post('https://accounts.spotify.com/api/token', params, {
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'Authorization': authHeader
-        }
-      });
-
-      const accessToken = response.data.access_token;
-      const refreshToken = response.data.refresh_token;
-
-      //Use the accessToken to call Spotify's /me endpoint
-      const userProfileResponse = await axios.get('https://api.spotify.com/v1/me', {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        }
-      });
-      //Get the user's info from the response
-      const spotifyId = userProfileResponse.data.id;
-      const displayName = userProfileResponse.data.display_name;
-      const email = userProfileResponse.data.email || null;
-      const profilePicture = userProfileResponse.data.images[0]?.url || null;
-      // Find or create that user in our database.
-      const userResult = await sql`
-        INSERT INTO users (
-          spotify_id, 
-          display_name, 
-          email, 
-          profile_picture, 
-          refresh_token
-        )
-        VALUES (
-          ${spotifyId}, 
-          ${displayName}, 
-          ${email}, 
-          ${profilePicture}, 
-          ${refreshToken}
-        )
-        ON CONFLICT (spotify_id) 
-        DO UPDATE SET
-          display_name = EXCLUDED.display_name,
-          email = EXCLUDED.email,
-          profile_picture = EXCLUDED.profile_picture,
-          refresh_token = EXCLUDED.refresh_token
-        RETURNING id;
-      `;
-
-      // Get the user's unique ID from our database
-      const userId = userResult[0].id;
-
-      // Create a secure session token (JWT)
-      const payload = { userId: userId };
-      const secret = process.env.JWT_SECRET;
-      const options = { expiresIn: '1h' }; // The token will expire in 1 hour
-
-      const token = jwt.sign(payload, secret, options);
-
-      // Send the token to the user as a secure, HttpOnly cookie
-      res.cookie('token', token, {
-        httpOnly: true, // Makes it invisible to client-side JavaScript
-        maxAge: 60 * 60 * 1000, // 1 hour in milliseconds (must match the token's 'expiresIn')
-        // **We'll add 'secure: true' later for production (HTTPS)**
-      });
-      console.log(`User ${userId} logged in successfully.`);
-
-      // Redirect the user to the frontend application
-      res.redirect('http://localhost:3001/');
-
-    } catch (error) {
-      console.error('Error during callback processing:', error.message);
-        res.status(500).send('Login failed during server processing.');
-          }
-  }
-});
-
-
-app.post('/api/playlists', async (req, res) => {
-  // --- 1. AUTHENTICATION & VERIFICATION ---
-  const token = req.cookies.token; // check for the JWT token in cookies
-  if (!token) {
-    return res.status(401).json({ error: 'No token provided. Access denied.' });
-  }
-  let userId; // declare before try statement so we can use it when we leave the block
+app.get('/api/playlists', async (req, res) => {
   try {
-    // Will throw an error if the token is expired or the signature is bad
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    // If we get here, the token is valid
-    userId = payload.userId;
-  } catch (error) {
-    // If verification fails, send a 401 Unauthorized error
-    return res.status(401).json({ error: 'Access denied. Invalid token.' });
-  }
-  console.log(`User ${userId} is authenticated and is creating a playlist.`);
-  // --- 2. MAIN BUSINESS LOGIC (with a safety net) ---
-  try {
-    // get user's refresh token from database.
-    const userResult = await sql`
-      SELECT refresh_token, spotify_id FROM users WHERE id = ${userId};
-    `;
-    if (userResult.length === 0) {
-      return res.status(404).json({ error: 'User not found in database.' });
-    }
-    const refreshToken = userResult[0].refresh_token;
-    const spotifyId = userResult[0].spotify_id;
+    const refreshToken = proccess.env.MASTER_SPOTIFY_REFRESH_TOKEN;
+    const spotifyId = process.env.MASTER_SPOTIFY_ID;
     // Use the refresh token to get a new access token from Spotify.
     let accessToken;
     try {
@@ -220,8 +62,8 @@ app.post('/api/playlists', async (req, res) => {
     }
     console.log('Successfully refreshed access token.');
 
-    console.log('Data received in request body:', req.body);
-    const { city, date, artists, number_of_songs } = req.body;
+    const { city, date } = req.query;
+    const number_of_songs = 2;
     const playlistData = {
     // Create an empty playlist on Spotify.
     name: `${city} ${date} live music`,
