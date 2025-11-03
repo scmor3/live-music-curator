@@ -101,13 +101,19 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
   console.log(`Saved curation request with ID: ${curationRequestId}`);
 
   // Get the raw artist list
-  const artists = ['Red Hot Chili Peppers', 'Red Hot Chili Pipers', 'A Badly Spelled Artist'];
+  const rawArtistList = ['Red Hot Chili Peppers', 'Red Hot Chili Pipers', 'jimmy eats world', 'jimmy eat world', 'A Badly Spelled Artist'];
+  // De-duplicate the list - normalize to lowercase to catch simple duplicates
+  const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
+  const uniqueArtists = [...new Set(lowercasedArtists)];
+
+  console.log(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
 
   // Initialize array to hold artist results
   const curatedArtistsData = [];
+  const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
 
   // Loop through each artist and process
-  for (const artistName of artists) {
+  for (const artistName of uniqueArtists) {
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -192,6 +198,14 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
 
       // If we have a match, add tracks
       if (spotifyArtistId) {
+        // Check if we've already added tracks for this exact Spotify ID
+        if (processedArtistIds.has(spotifyArtistId)) {
+          console.log(`Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
+          continue;
+        }
+        // If not, this is a new artist. Add them to our Set.
+        processedArtistIds.add(spotifyArtistId);
+        
         const topTracksResponse = await axios.get(
           `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
