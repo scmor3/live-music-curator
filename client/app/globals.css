@@ -10,6 +10,16 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --color-tahini: #dcb711;
+  --color-brown-coyote: #7A542E;
+  --color-dark-pastel-green: #71C269;
+  --color-champagne-pink: #FAE4D3;
+  --color-RISD-blue: #004FFF;
+  --color-burnt-umber: #982F24;
+  --color-egyptian-blue: #00277A;
+  --color-pastel-yellow: #FAE59E;
+  --color-night-blue: #1E2775;
+  --color-grey-blue: #555C7B;
 }
 
 @media (prefers-color-scheme: dark) {

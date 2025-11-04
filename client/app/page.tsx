@@ -4,7 +4,7 @@
 import { useState } from 'react';
 
 export default function HomePage() {
-  // 1. Define our State
+  // --- 1. Define our State ---
   const [date, setDate] = useState('');
   
   // We need new state variables to track the API call
@@ -13,13 +13,13 @@ export default function HomePage() {
   const [error, setError] = useState(''); // To show any error messages
 
   /**
-   * This function runs when the user clicks "Find Music"
+   * This function runs when the user clicks "Create"
    */
-  const handleFindMusic = async () => {
+  const handlePlaylistCreation = async () => {
     console.log('Button clicked!');
     console.log('User selected date:', date);
     
-    //2. Start the API Call
+    // --- 2. Start the API Call ---
     setIsLoading(true); // Show loading spinner
     setError(''); // Clear any old errors
     setPlaylistId(''); // Clear any old results
@@ -34,6 +34,7 @@ export default function HomePage() {
       });
       
       // We're calling our own server, which is on port 3000
+      // Use the WSL IP address for the fetch request
       const response = await fetch(`http://172.17.236.175:3000/api/playlists?${queryParams}`);
 
       if (!response.ok) {
@@ -69,48 +70,61 @@ export default function HomePage() {
   };
 
   return (
-    <main>
-      <h1>My Live Music Curator</h1>
-      <p>This is the new homepage!</p>
+    // --- Page layout: dark background, content centered ---
+    <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-pastel-yellow">
       
-      <div>
-        <label htmlFor="date-picker">
-          Select a date:
-        </label>
-        <input 
-          type="date" 
-          id="date-picker"
-          value={date} 
-          onChange={(e) => setDate(e.target.value)} 
-          disabled={isLoading} // Disable input while loading
-        />
-      </div>
+      {/* --- Centered "card" with a slightly lighter dark background --- */}
+      <div className="p-8 w-full max-w-lg text-center">
 
-      <button onClick={handleFindMusic} disabled={isLoading}>
-        {/* 7. Show "Loading..." text when loading */}
-        {isLoading ? 'Finding Music...' : 'Find Music'}
-      </button>
-
-      {/* 8. Show the results or error message to the user */}
-      <div>
-        {error ? (
-          <p style={{ color: 'red' }}>{error}</p>
-        ) : null}
+        {/* --- Content with warm, light text colors --- */}
+        <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Curator</h1>
+        <p className="text-black mb-6">Enter a date to create a playlist of artists playing music in Austin, TX sometime in the next 30 days.</p>
         
-        {playlistId ? (
-          <div>
-            <h3>Success!</h3>
-            <p>Your playlist is ready:</p>
-            <a 
-              href={`https://open.spotify.com/playlist/${playlistId}`}
-              target="_blank" 
-              rel="noopener noreferrer"
-              style={{ color: 'green', fontWeight: 'bold' }} // Just some simple styling
-            >
-              Open Playlist on Spotify
-            </a>
-          </div>
-        ) : null}
+        {/* --- Form layout wrapper --- */}
+        <div className="flex flex-col items-center gap-2 mt-4">
+  <label htmlFor="date-picker" className="text-sm font-medium text-black mb-1">
+    Select a date:
+  </label>
+  <input 
+    type="date"
+    id="date-picker"
+    value={date} 
+    onChange={(e) => setDate(e.target.value)} 
+    disabled={isLoading}
+    className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark"
+  />
+  <button 
+    onClick={handlePlaylistCreation} 
+    disabled={isLoading}
+    className="py-2 px-4 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-amber-700 disabled:opacity-50 mt-2"
+  >
+    {isLoading ? 'Creating Playlist...' : 'Create'}
+  </button>
+</div>
+
+        {/* 8. Show the results or error message to the user */}
+        <div className="mt-6">
+          
+          {error ? (
+            <p className="text-red-500">{error}</p> // Errors are still red (which is a warm color!)
+          ) : null}
+          
+          {playlistId ? (
+            <div className="border-t border-zinc-700 pt-4 mt-4">
+              <h3 className="text-xl font-semibold text-stone-100">Success!</h3>
+              <p className="text-stone-300">Your playlist is ready:</p>
+              {/* --- Warm-colored link --- */}
+              <a 
+                href={`https://open.spotify.com/playlist/${playlistId}`}
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-amber-500 font-bold hover:underline"
+              >
+                Open Playlist on Spotify
+              </a>
+            </div>
+          ) : null}
+        </div>
       </div>
     </main>
   );
