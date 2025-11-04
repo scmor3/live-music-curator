@@ -101,8 +101,14 @@ export default function HomePage() {
           <div>
             <h3>Success!</h3>
             <p>Your playlist is ready:</p>
-            {/* We'll make this a real link later */}
-            <p>Playlist ID: {playlistId}</p>
+            <a 
+              href={`https://open.spotify.com/playlist/${playlistId}`}
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ color: 'green', fontWeight: 'bold' }} // Just some simple styling
+            >
+              Open Playlist on Spotify
+            </a>
           </div>
         ) : null}
       </div>
