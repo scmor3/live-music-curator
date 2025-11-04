@@ -4,12 +4,17 @@ const querystring = require('querystring');
 const axios = require('axios');
 const postgres = require('postgres');
 const levenshtein = require('fast-levenshtein');
+const cors = require('cors');
 require('dotenv').config();
 
 // --- App & Middleware Configuration ---
 const app = express();
 const port = 3000;
 app.use(express.json());
+const corsOptions = {
+  origin: 'http://172.17.236.175:3001' // Only allow requests from our frontend
+};
+app.use(cors(corsOptions));
 
 // Create a single, shared database connection pool
 const sql = postgres({
