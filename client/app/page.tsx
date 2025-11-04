@@ -11,14 +11,28 @@ export default function HomePage() {
   const [playlistId, setPlaylistId] = useState(''); // To store the final result
   const [isLoading, setIsLoading] = useState(false); // To show a loading spinner
   const [error, setError] = useState(''); // To show any error messages
-
+  // Get today's date and format it
+  const today = new Date();
+  const todayString = today.toISOString().split('T')[0];
+  // Get the date 30 days from now
+  const maxDate = new Date();
+  maxDate.setDate(today.getDate() + 7);
+  const maxDateString = maxDate.toISOString().split('T')[0];
   /**
    * This function runs when the user clicks "Create"
    */
   const handlePlaylistCreation = async () => {
     console.log('Button clicked!');
     console.log('User selected date:', date);
-    
+    // We must validate the date *before* making an API call
+    if (!date) {
+      setError('Please select a date.');
+      return; // Stop the function
+    }
+    if (date < todayString || date > maxDateString) {
+      setError('Please select a date within the next 7 days.');
+      return; // Stop the function
+    }
     // --- 2. Start the API Call ---
     setIsLoading(true); // Show loading spinner
     setError(''); // Clear any old errors
@@ -78,18 +92,21 @@ export default function HomePage() {
 
         {/* --- Content with warm, light text colors --- */}
         <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Curator</h1>
-        <p className="text-black mb-6">Enter a date to create a playlist of artists playing music in Austin, TX sometime in the next 30 days.</p>
+        <p className="text-black mb-6">Enter a date to create a playlist of artists playing music in Austin, TX sometime in the next week.</p>
         
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-2 mt-4">
   <label htmlFor="date-picker" className="text-sm font-medium text-black mb-1">
     Select a date:
   </label>
+  {/* TODO: change date picker from default browser option to avoid greyed out year */}
   <input 
     type="date"
     id="date-picker"
     value={date} 
     onChange={(e) => setDate(e.target.value)} 
+    min={todayString}
+    max={maxDateString}
     disabled={isLoading}
     className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark"
   />
@@ -111,14 +128,13 @@ export default function HomePage() {
           
           {playlistId ? (
             <div className="border-t border-zinc-700 pt-4 mt-4">
-              <h3 className="text-xl font-semibold text-stone-100">Success!</h3>
-              <p className="text-stone-300">Your playlist is ready:</p>
-              {/* --- Warm-colored link --- */}
+              <h3 className="text-xl font-semibold text-night-blue">Success!</h3>
+              <p className="text-black">Your playlist is ready:</p>
               <a 
                 href={`https://open.spotify.com/playlist/${playlistId}`}
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="text-amber-500 font-bold hover:underline"
+                className="text-dark-pastel-green font-bold hover:underline"
               >
                 Open Playlist on Spotify
               </a>
