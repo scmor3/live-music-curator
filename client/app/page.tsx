@@ -38,7 +38,7 @@ export default function HomePage() {
     setError(''); // Clear any old errors
     setPlaylistId(''); // Clear any old results
     
-    const city = 'Austin'; // Hardcoded for V1
+    const city = 'Austin, TX'; // Hardcoded for V1
 
     try {
       // 3. Build the URL for our backend API

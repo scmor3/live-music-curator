@@ -105,8 +105,16 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
   const curationRequestId = curationRequestResult[0].id;
   console.log(`Saved curation request with ID: ${curationRequestId}`);
 
+  // Get the raw artist list from our JSON file
+  const curatedLists = require('./curated_lists.json');
   // Get the raw artist list
-  const rawArtistList = ['Red Hot Chili Peppers', 'Red Hot Chili Pipers', 'jimmy eats world', 'jimmy eat world', 'A Badly Spelled Artist'];
+  const rawArtistList = curatedLists[city]?.[date];
+  if (!rawArtistList || rawArtistList.length === 0) {
+    console.log(`No curated list found for ${city} on ${date}.`);
+    // This is a "client error" - they asked for something that doesn't exist.
+    // We'll throw an error that the /api/playlists route can catch.
+    throw new Error('No curated list available for that city and date.');
+  }
   // De-duplicate the list - normalize to lowercase to catch simple duplicates
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
