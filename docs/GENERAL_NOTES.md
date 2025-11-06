@@ -26,6 +26,7 @@ Edge cases:
     * check if the first playlist still exists. If same number of songs input, check if there are any new artists playing in the input city and on the input date and add their top songs to the playlist. If different number of songs, create new playlist. If playlist doesn't exist, just create new playlist.
 * User spams creating playlists
     * limit number of playlists that can be created per hour or day or something.
+* "Wes Urbaniak Music" Should be "Wes Urbaniak" How do we catch this?
 
 Steps:
 1. Initiate new github repo

@@ -5,6 +5,8 @@ const axios = require('axios');
 const postgres = require('postgres');
 const levenshtein = require('fast-levenshtein');
 const cors = require('cors');
+const { scrapeBandsintown } = require('./utils/bandsintownScraper');
+const cityData = require('./city_data.json');
 require('dotenv').config();
 
 // --- App & Middleware Configuration ---
@@ -105,10 +107,15 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
   const curationRequestId = curationRequestResult[0].id;
   console.log(`Saved curation request with ID: ${curationRequestId}`);
 
-  // Get the raw artist list from our JSON file
-  const curatedLists = require('./curated_lists.json');
-  // Get the raw artist list
-  const rawArtistList = curatedLists[city]?.[date];
+  // Look up the metadata for the requested city
+  const currentCityData = cityData[city];
+  // Check if we even have data for this city
+  if (!currentCityData) {
+    console.log(`No city data found for "${city}".`);
+    throw new Error('Sorry, that city is not supported yet.');
+  }
+  // Get the raw artist list by calling our new scraper
+  const rawArtistList = await scrapeBandsintown(currentCityData, date);
   if (!rawArtistList || rawArtistList.length === 0) {
     console.log(`No curated list found for ${city} on ${date}.`);
     // This is a "client error" - they asked for something that doesn't exist.

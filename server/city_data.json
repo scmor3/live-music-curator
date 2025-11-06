@@ -1,0 +1,12 @@
+{
+  "Austin, TX": {
+    "cityId": "4671654",
+    "latitude": "30.26715",
+    "longitude": "-97.74306"
+  },
+  "Denver, CO": {
+    "cityId": "5419384",
+    "latitude": "39.73915",
+    "longitude": "-104.9847"
+  }
+}
