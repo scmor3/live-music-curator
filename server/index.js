@@ -1,12 +1,10 @@
 // --- Imports ---
 const express = require('express');
-const querystring = require('querystring');
 const axios = require('axios');
 const postgres = require('postgres');
 const levenshtein = require('fast-levenshtein');
 const cors = require('cors');
 const { scrapeBandsintown } = require('./utils/bandsintownScraper');
-const cityData = require('./city_data.json');
 require('dotenv').config();
 
 // --- App & Middleware Configuration ---
@@ -29,6 +27,7 @@ const sql = postgres({
   onnotice: () => {}, 
 });
 
+// --- Constants ---
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 const MASTER_REFRESH_TOKEN = process.env.MASTER_REFRESH_TOKEN;
@@ -65,7 +64,14 @@ async function getMasterAccessToken() {
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(city, date, number_of_songs, accessToken) {
+async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude) {
+  // Get the raw artist list by calling our scraper
+  const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
+  // Check if we found any artists.
+  if (!rawArtistList || rawArtistList.length === 0) {
+    console.log(`No artists found for "${city}" on ${date}.`);
+    return { playlistId: null, curatedArtistsData: [] };
+  }
   // Create the new empty playlist on Spotify
   const playlistData = {
     name: `${city} ${date} live music`,
@@ -78,54 +84,17 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
       'Content-Type': 'application/json'
     }
   };
-  
   const createPlaylistResponse = await axios.post(
     `https://api.spotify.com/v1/users/${MASTER_SPOTIFY_ID}/playlists`,
     playlistData,
     axiosConfig
   );
-  
   const playlistId = createPlaylistResponse.data.id;
   console.log(`Successfully created new playlist with ID: ${playlistId}`);
 
-  // Save the main request to our database (to cache it)
-  const curationRequestResult = await sql`
-    INSERT INTO curation_requests (
-      search_city,
-      search_date,
-      number_of_songs,
-      playlist_id
-    )
-    VALUES (
-      ${city}, 
-      ${date}, 
-      ${number_of_songs}, 
-      ${playlistId}
-    )
-    RETURNING id;
-  `;
-  const curationRequestId = curationRequestResult[0].id;
-  console.log(`Saved curation request with ID: ${curationRequestId}`);
-
-  // Look up the metadata for the requested city
-  const currentCityData = cityData[city];
-  // Check if we even have data for this city
-  if (!currentCityData) {
-    console.log(`No city data found for "${city}".`);
-    throw new Error('Sorry, that city is not supported yet.');
-  }
-  // Get the raw artist list by calling our new scraper
-  const rawArtistList = await scrapeBandsintown(currentCityData, date);
-  if (!rawArtistList || rawArtistList.length === 0) {
-    console.log(`No curated list found for ${city} on ${date}.`);
-    // This is a "client error" - they asked for something that doesn't exist.
-    // We'll throw an error that the /api/playlists route can catch.
-    throw new Error('No curated list available for that city and date.');
-  }
   // De-duplicate the list - normalize to lowercase to catch simple duplicates
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
-
   console.log(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
 
   // Initialize array to hold artist results
@@ -140,12 +109,12 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
           headers: { 'Authorization': `Bearer ${accessToken}` }
         }
       );
-      
+
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
         console.log(`No Spotify results for "${artistName}".`);
         curatedArtistsData.push({
-          curation_request_id: curationRequestId,
+          // We will add curation_request_id *later*, after the loop
           artist_name_raw: artistName,
           spotify_artist_id: null,
           confidence_score: 0
@@ -169,9 +138,8 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
         // Found Exact Match
         spotifyArtistId = bestMatch.id;
         confidenceScore = 100.00;
-        
+
         curatedArtistsData.push({
-          curation_request_id: curationRequestId,
           artist_name_raw: artistName,
           spotify_artist_id: spotifyArtistId,
           confidence_score: confidenceScore
@@ -196,9 +164,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
           confidenceScore = 100.00 - (minDistance * 10);
-
           curatedArtistsData.push({
-            curation_request_id: curationRequestId,
             artist_name_raw: artistName,
             spotify_artist_id: spotifyArtistId,
             confidence_score: confidenceScore
@@ -208,7 +174,6 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
           // No good match found
           console.log(`No close match for "${artistName}". Skipping.`);
           curatedArtistsData.push({
-            curation_request_id: curationRequestId,
             artist_name_raw: artistName,
             spotify_artist_id: null,
             confidence_score: 0
@@ -238,7 +203,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
           await axios.post(
             `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
             { uris: trackUris },
-            axiosConfig // Re-use the config with the auth header
+            axiosConfig
           );
           console.log(`Added ${trackUris.length} tracks for "${artistName}"`);
         }
@@ -246,7 +211,6 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
     } catch (error) {
       console.error(`Error processing artist "${artistName}":`, error.message);
       curatedArtistsData.push({
-        curation_request_id: curationRequestId,
         artist_name_raw: artistName,
         spotify_artist_id: null,
         confidence_score: 0
@@ -254,25 +218,9 @@ async function runCurationLogic(city, date, number_of_songs, accessToken) {
       continue;
     }
   }
+  return { playlistId, curatedArtistsData };
 
-  // Save all artist results to the database
-  if (curatedArtistsData.length > 0) {
-    console.log(`Saving ${curatedArtistsData.length} curated artist results...`);
-    await sql`
-      INSERT INTO curated_artists ${sql(curatedArtistsData, 
-        'curation_request_id', 
-        'artist_name_raw', 
-        'spotify_artist_id', 
-        'confidence_score'
-      )}
-    `;
-    console.log('Successfully saved curated artist data.');
-  }
-
-  // Return the ID of the playlist we created
-  return playlistId;
 }
-
 
 // Main API Routes
 
@@ -284,17 +232,60 @@ app.get('/', (req, res) => {
 });
 
 /**
+ * Autocomplete route for cities.
+ * Uses the trigram index on the 'cities' table for fast, fuzzy search.
+ */
+app.get('/api/search-cities', async (req, res) => {
+  const { q } = req.query;
+
+  if (!q) {
+    return res.status(400).json({ error: 'Missing query parameter: q' });
+  }
+
+  try {
+    // Calculate similarity
+    // We use similarity() to find rows that are "like" the query.
+    // We select the name and the similarity score itself, ordered by highest.
+    const results = await sql`
+      SELECT name, latitude, longitude, similarity(name, ${q}) as sml
+      FROM cities
+      WHERE similarity(name, ${q}) > 0.1 -- Set a threshold (0.1 is pretty low/fuzzy)
+      ORDER BY sml DESC -- Order by the best match first
+      LIMIT 10; -- Only return the top 10 matches
+    `;
+    
+    // Format and return the results
+    const suggestions = results.map(r => ({
+      name: r.name,
+      latitude: r.latitude,
+      longitude: r.longitude
+    }));
+
+    res.json(suggestions);
+
+  } catch (error) {
+    console.error('Error in /api/search-cities:', error.message);
+    res.status(500).json({ error: 'Error searching for cities.' });
+  }
+});
+
+/**
  * Main curation route.
  * Checks for a cached playlist, or builds one on-demand.
  */
 app.get('/api/playlists', async (req, res) => {
-  const { city, date } = req.query;
+  // We now expect the client to send us the exact lat/lon
+  const { city, date, lat, lon } = req.query;
   const number_of_songs = 2;
 
   // Validate Input (Basic)
-  if (!city || !date) {
-    return res.status(400).json({ error: 'Missing required query parameters: city and date' });
+  if (!city || !date || !lat || !lon) {
+    return res.status(400).json({ error: 'Missing required query parameters: city, date, lat, and lon' });
   }
+
+  // Convert lat/lon to numbers for safety
+  const latitude = parseFloat(lat);
+  const longitude = parseFloat(lon);
 
   try {
     // Check "Cache" (Our Database)
@@ -309,12 +300,17 @@ app.get('/api/playlists', async (req, res) => {
 
     if (cacheResult.length > 0) {
       // Cache HIT: Return the found playlist
-      const playlistId = cacheResult[0].playlist_id;
-      console.log(`Cache HIT: Found pre-built playlist for ${city} on ${date}.`);
-      return res.json({ 
-        playlistId: playlistId,
-        source: 'cache' 
-      });
+      const playlistId = cacheResult[0].playlist_id; // This could be NULL if no artists were found previously
+      if (playlistId === null) {
+        console.log(`Cache HIT (Negative): No artists found for ${city} on ${date}.`);
+        return res.status(404).json({ error: 'No artists found for this city and date.' });
+      } else {
+        console.log(`Cache HIT (Positive): Found pre-built playlist for ${city} on ${date}.`);
+        return res.json({ 
+          playlistId: playlistId,
+          source: 'cache' 
+        });
+      }
     }
 
     // Cache MISS: Build the playlist
@@ -324,13 +320,64 @@ app.get('/api/playlists', async (req, res) => {
     const accessToken = await getMasterAccessToken();
 
     // Now, run the main curation logic
-    const newPlaylistId = await runCurationLogic(city, date, number_of_songs, accessToken);
+    const { playlistId, curatedArtistsData } = await runCurationLogic(
+      city, 
+      date, 
+      number_of_songs, 
+      accessToken, 
+      latitude, 
+      longitude
+    );
 
-    // Return the new playlist
-    return res.json({ 
-      playlistId: newPlaylistId,
-      source: 'new' 
-    });
+    // Save the results to database *after* the logic is done.
+    const curationRequestResult = await sql`
+      INSERT INTO curation_requests (
+        search_city,
+        search_date,
+        number_of_songs,
+        playlist_id -- This will be 'null' if no artists were found
+      )
+      VALUES (
+        ${city}, 
+        ${date}, 
+        ${number_of_songs}, 
+        ${playlistId} 
+      )
+      RETURNING id;
+    `;
+    const curationRequestId = curationRequestResult[0].id;
+
+    // Save the detailed artist results
+    if (curatedArtistsData.length > 0) {
+      // We must add the new curationRequestId to all our objects
+      const artistsToInsert = curatedArtistsData.map(artist => ({
+        ...artist,
+        curation_request_id: curationRequestId 
+      }));
+
+      console.log(`Saving ${artistsToInsert.length} curated artist results...`);
+      await sql`
+        INSERT INTO curated_artists ${sql(artistsToInsert, 
+          'curation_request_id', 
+          'artist_name_raw', 
+          'spotify_artist_id', 
+          'confidence_score'
+        )}
+      `;
+      console.log('Successfully saved curated artist data.');
+    }
+
+    // Send the final response to the client
+    if (playlistId === null) {
+      // We finished, but found no artists. Send the 404.
+      return res.status(404).json({ error: 'No artists found for this city and date.' });
+    } else {
+      // We finished and created a playlist!
+      return res.json({ 
+        playlistId: playlistId,
+        source: 'new' 
+      });
+    }
 
   } catch (error) {
     // This is the main safety net

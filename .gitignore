@@ -137,3 +137,7 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Ignore large seed data and debug files
+server/worldcities.csv
+server/seed_output_debug.json

@@ -2,13 +2,18 @@ const axios = require('axios');
 
 // A simple helper function to pause execution
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// Formats a 'YYYY-MM-DD' string into the required Bandsintown range.
+/**
+ * Formats a 'YYYY-MM-DD' string into the required Bandsintown range.
+ */
 function formatDateForBandsintown(dateStr) {
   const formattedDate = `${dateStr}T00:00:00,${dateStr}T23:00:00`;
   return formattedDate;
 }
-// Scrapes all artist names for a given city and date by paginating an API.
-async function scrapeBandsintown(cityData, dateStr) {
+/**
+ * Scrapes all artist names for a given date and location by paginating an API.
+ * We now pass in the latitude and longitude.
+ */
+async function scrapeBandsintown(dateStr, latitude, longitude) {
   const formattedDate = formatDateForBandsintown(dateStr);
   let page = 1;
   const allArtistNames = [];
@@ -18,10 +23,10 @@ async function scrapeBandsintown(cityData, dateStr) {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
   };
   while (page) {
-    const url = `https://www.bandsintown.com/choose-dates/fetch-next/upcomingEvents?city_id=${cityData.cityId}&date=${formattedDate}&page=${page}&longitude=${cityData.longitude}&latitude=${cityData.latitude}&genre_query=all-genres`;
+    const url = `https://www.bandsintown.com/choose-dates/fetch-next/upcomingEvents?date=${formattedDate}&page=${page}&longitude=${longitude}&latitude=${latitude}&genre_query=all-genres`;
     
     try {
-      console.log(`Scraping page ${page} for ${dateStr}...`);
+      console.log(`Scraping page ${page} for ${dateStr} at ${latitude},${longitude}...`);
       const response = await axios.get(url, { headers });
 
       const events = response.data.events;
