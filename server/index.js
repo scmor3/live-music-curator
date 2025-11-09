@@ -12,7 +12,7 @@ const app = express();
 const port = 3000;
 app.use(express.json());
 const corsOptions = {
-  origin: 'http://172.17.236.175:3001' // Only allow requests from our frontend
+  origin: process.env.CLIENT_ORIGIN // Only allow requests from our frontend
 };
 app.use(cors(corsOptions));
 

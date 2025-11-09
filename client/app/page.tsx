@@ -9,6 +9,8 @@ type CitySuggestion = {
   longitude: number;
 };
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://172.17.236.175:3000';
+
 export default function HomePage() {
   // --- 1. Define our State ---
   // State for the city autocomplete
@@ -43,7 +45,7 @@ export default function HomePage() {
     const timer = setTimeout(async () => {
       try {
         // Call our new backend endpoint
-        const response = await fetch(`http://172.17.236.175:3000/api/search-cities?q=${encodeURIComponent(searchQuery)}`);
+        const response = await fetch(`${API_URL}/api/search-cities?q=${encodeURIComponent(searchQuery)}`);
         if (!response.ok) {
           throw new Error('Failed to fetch city suggestions');
         }
@@ -122,7 +124,7 @@ export default function HomePage() {
       });
       // We're calling our own server, which is on port 3000
       // Use the WSL IP address for the fetch request
-      const response = await fetch(`http://172.17.236.175:3000/api/playlists?${queryParams}`);
+      const response = await fetch(`${API_URL}/api/playlists?${queryParams}`);
 
       if (!response.ok) {
         // Try to get the error message from the server's JSON response
