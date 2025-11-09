@@ -173,7 +173,7 @@ export default function HomePage() {
           Enter a date and city to create a playlist of artists playing music in anywhere in the world sometime in the next week.
         </p>
         <p className="text-red-500 font-bold text-lg">
-          DEBUG: Variable is: "{process.env.API_URL}"
+          DEBUG: Variable is: "{API_URL}"
         </p>
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-4 mt-4">
