@@ -23,6 +23,7 @@ const sql = postgres({
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
+  pool_mode: process.env.DB_POOL_MODE,
   family: 4, // Forces the connection to use IPv4
   // quiet postgres console logs
   onnotice: () => {}, 
