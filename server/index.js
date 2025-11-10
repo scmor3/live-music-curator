@@ -73,6 +73,11 @@ const MASTER_SPOTIFY_ID = process.env.MASTER_SPOTIFY_ID;
 // --- Helper Functions ---
 
 /**
+ * A simple helper function to pause execution.
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * Uses the master refresh token to get a new, valid master access token.
  */
 async function getMasterAccessToken() {
@@ -139,7 +144,9 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
 
   // Loop through each artist and process
-  for (const artistName of uniqueArtists) {
+  for (let i = 0; i < uniqueArtists.length; i++) {
+    const artistName = uniqueArtists[i];
+
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -246,13 +253,22 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
         }
       }
     } catch (error) {
-      console.error(`Error processing artist "${artistName}":`, error.message);
-      curatedArtistsData.push({
+      if (error.response && error.response.status === 429) { // It's a rate-limiting error!
+      const retryAfterSeconds = error.response.headers['retry-after'] || 5; // Default to 5 seconds
+      const waitMs = Number(retryAfterSeconds) * 1000;
+      console.warn(`Spotify rate limit hit. Waiting ${retryAfterSeconds} seconds for artist "${artistName}"...`);
+      await sleep(waitMs);
+      // Decrement 'i' to retry this same artist on the next loop iteration
+      i--;
+      } else {
+        // It was a different, unexpected error. Log it and move on.
+        console.error(`Error processing artist "${artistName}":`, error.message);
+        curatedArtistsData.push({
         artist_name_raw: artistName,
         spotify_artist_id: null,
         confidence_score: 0
-      });
-      continue;
+        });
+      }
     }
   }
   return { playlistId, curatedArtistsData };
