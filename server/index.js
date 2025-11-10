@@ -13,8 +13,24 @@ require('dotenv').config();
 const app = express();
 const port = 3000;
 app.use(express.json());
+// Whitelist of all allowed frontend URLs
+const allowedOrigins = [
+  'https://live-music-curator.vercel.app', // Production URL
+  'live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app' // Preview URL
+  // Other URLs can be added here as needed
+];
+
 const corsOptions = {
-  origin: process.env.CLIENT_ORIGIN // Only allow requests from our frontend
+  origin: function (origin, callback) {
+    // Check if the incoming request's 'origin' is in our whitelist
+    if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
+      // If it is (or if it's a server-to-server request, where origin is 'undefined'), allow it.
+      callback(null, true);
+    } else {
+      // If it's not in the whitelist, block it.
+      callback(new Error('This origin is not allowed by CORS.'));
+    }
+  }
 };
 app.use(cors(corsOptions));
 
@@ -25,13 +41,9 @@ const sql = postgres({
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
-  // pool_mode: process.env.DB_POOL_MODE,
-  // family: 4, // Forces the connection to use IPv4
   // quiet postgres console logs
   onnotice: () => {}, 
 });
-
-// const sql = postgres(process.env.DATABASE_URL);
 
 // --- Constants ---
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
