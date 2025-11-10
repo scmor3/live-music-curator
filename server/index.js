@@ -1,3 +1,5 @@
+console.log("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
+
 // --- Imports ---
 const express = require('express');
 const axios = require('axios');
@@ -268,7 +270,9 @@ app.get('/api/search-cities', async (req, res) => {
     res.json(suggestions);
 
   } catch (error) {
-    console.error('Error in /api/search-cities:', error.message);
+  // --- THIS IS THE NEW, BETTER LOG ---
+    console.error('Error in /api/search-cities: FULL ERROR OBJECT:');
+    console.error(error);
     res.status(500).json({ error: 'Error searching for cities.' });
   }
 });
