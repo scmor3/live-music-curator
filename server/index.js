@@ -22,13 +22,20 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: function (origin, callback) {
+    
+    // Show us the exact origin Vercel is sending.
+    console.log('CORS CHECK: Received origin:', origin);
+
     // Check if the incoming request's 'origin' is in our whitelist
     if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
-      // If it is (or if it's a server-to-server request, where origin is 'undefined'), allow it.
+      // If it is (or a server-to-server request), allow it.
       callback(null, true);
     } else {
       // If it's not in the whitelist, block it.
-      callback(new Error('This origin is not allowed by CORS.'));
+      console.error('CORS BLOCKED:', origin); // Log the blocked origin
+      
+      // Send 'false' to block the request, instead of an Error to avoid crashing the server.
+      callback(null, false); 
     }
   }
 };
