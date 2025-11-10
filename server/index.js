@@ -31,7 +31,7 @@ app.use(cors(corsOptions));
 //   onnotice: () => {}, 
 // });
 
-const sql = postgres();
+const sql = postgres(process.env.DATABASE_URL);
 
 // --- Constants ---
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
