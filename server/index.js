@@ -41,18 +41,28 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// Create a single, shared database connection pool
-const sql = postgres({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  // quiet postgres console logs
-  onnotice: () => {}, 
-});
+let sql; // 1. Declare sql here, in the top-level scope
 
-// const sql = postgres(process.env.DATABASE_URL);
+// Check which environment variables are available
+if (process.env.DATABASE_URL) {
+  // --- PRODUCTION ---
+  // Render provides the DATABASE_URL. Use it.
+  console.log('Connecting to database using DATABASE_URL...');
+  sql = postgres(process.env.DATABASE_URL);
+} else {
+  // --- LOCAL ---
+  // We're local. Use the .env file's separate variables.
+  console.log('Connecting to database using local .env variables...');
+  sql = postgres({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT),
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    onnotice: () => {}, // quiet postgres console logs
+  });
+}
+
 
 // --- Constants ---
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
