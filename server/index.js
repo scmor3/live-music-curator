@@ -19,19 +19,19 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Create a single, shared database connection pool
-// const sql = postgres({
-//   host: process.env.DB_HOST,
-//   port: Number(process.env.DB_PORT),
-//   database: process.env.DB_NAME,
-//   user: process.env.DB_USER,
-//   password: process.env.DB_PASS,
-//   pool_mode: process.env.DB_POOL_MODE,
-//   family: 4, // Forces the connection to use IPv4
-//   // quiet postgres console logs
-//   onnotice: () => {}, 
-// });
+const sql = postgres({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT),
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  // pool_mode: process.env.DB_POOL_MODE,
+  // family: 4, // Forces the connection to use IPv4
+  // quiet postgres console logs
+  onnotice: () => {}, 
+});
 
-const sql = postgres(process.env.DATABASE_URL);
+// const sql = postgres(process.env.DATABASE_URL);
 
 // --- Constants ---
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
