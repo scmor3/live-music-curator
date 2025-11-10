@@ -16,9 +16,7 @@ app.use(express.json());
 // Whitelist of all allowed frontend URLs
 const allowedOrigins = [
   'https://live-music-curator.vercel.app', // Production URL
-  'https://live-music-curator.vercel.app/', // Production (with slash)
-  'live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app', // Preview URL
-  'https://live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app/' // Preview (with slash)
+  'https://live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app', // Preview URL
   // Other URLs can be added here as needed
 ];
 
@@ -44,17 +42,17 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Create a single, shared database connection pool
-// const sql = postgres({
-//   host: process.env.DB_HOST,
-//   port: Number(process.env.DB_PORT),
-//   database: process.env.DB_NAME,
-//   user: process.env.DB_USER,
-//   password: process.env.DB_PASS,
-//   // quiet postgres console logs
-//   onnotice: () => {}, 
-// });
+const sql = postgres({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT),
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  // quiet postgres console logs
+  onnotice: () => {}, 
+});
 
-const sql = postgres(process.env.DATABASE_URL);
+// const sql = postgres(process.env.DATABASE_URL);
 
 // --- Constants ---
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
