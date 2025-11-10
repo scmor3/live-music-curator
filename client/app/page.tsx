@@ -170,7 +170,7 @@ export default function HomePage() {
         {/* --- Content with warm, light text colors --- */}
         <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Curator</h1>
         <p className="text-black mb-6">
-          Enter a city and date to create a playlist of artists playing music anywhere in the world sometime in the next 30 days.
+          Enter a city and date to create a playlist of artists playing music anywhere in the world in the next 30 days.
         </p>
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-4 mt-4">
