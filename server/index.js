@@ -142,11 +142,13 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   // Initialize array to hold artist results
   const curatedArtistsData = [];
   const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
+  const retryCounts = {}; // Object to track retries per artist
 
   // Loop through each artist and process
   for (let i = 0; i < uniqueArtists.length; i++) {
     const artistName = uniqueArtists[i];
 
+    console.log(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -183,6 +185,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
         spotifyArtistId = bestMatch.id;
         confidenceScore = 100.00;
 
+        console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId})`);
         curatedArtistsData.push({
           artist_name_raw: artistName,
           spotify_artist_id: spotifyArtistId,
@@ -208,6 +211,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
           confidenceScore = 100.00 - (minDistance * 10);
+          console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance})`);
           curatedArtistsData.push({
             artist_name_raw: artistName,
             spotify_artist_id: spotifyArtistId,
@@ -250,23 +254,63 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
             axiosConfig
           );
           console.log(`Added ${trackUris.length} tracks for "${artistName}"`);
+        } else {
+          console.log(`  -> Found artist, but they have no top tracks. Skipping track add.`);
         }
       }
     } catch (error) {
-      if (error.response && error.response.status === 429) { // It's a rate-limiting error!
-      const retryAfterSeconds = error.response.headers['retry-after'] || 5; // Default to 5 seconds
-      const waitMs = Number(retryAfterSeconds) * 1000;
-      console.warn(`Spotify rate limit hit. Waiting ${retryAfterSeconds} seconds for artist "${artistName}"...`);
-      await sleep(waitMs);
-      // Decrement 'i' to retry this same artist on the next loop iteration
-      i--;
+      const status = error.response ? error.response.status : null;
+      // A list of all temporary error codes that we should retry
+      const retryableErrorCodes = [
+        429, // Rate Limit
+        500, // Internal Server Error
+        502, // Bad Gateway
+        503, // Service Unavailable
+        504  // Gateway Timeout
+      ];
+
+      if (status && retryableErrorCodes.includes(status)) {
+        // --- It's a retryable error! ---
+        const currentRetries = retryCounts[artistName] || 0;
+        const MAX_RETRIES = 3;
+
+        if (currentRetries < MAX_RETRIES) {
+          // We have retries left, so try again
+          retryCounts[artistName] = currentRetries + 1; // Increment retry count
+          
+          let waitMs = 3000; // Default 3 second wait for 5xx errors
+          let waitReason = `${status} server error`;
+
+          if (status === 429) {
+            // It's a rate-limit error, check for the 'retry-after' header
+            const retryAfterSeconds = error.response.headers['retry-after'] || 5; 
+            waitMs = Number(retryAfterSeconds) * 1000;
+            waitReason = `429 rate limit`;
+          }
+          
+          console.warn(`Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
+          await sleep(waitMs);
+          
+          i--; // Rewind the loop to retry
+          console.log(`Retrying artist "${artistName}"...`);
+
+        } else {
+          // --- We're out of retries. Give up on this artist. ---
+          console.error(`Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
+          curatedArtistsData.push({
+            artist_name_raw: artistName,
+            spotify_artist_id: null,
+            confidence_score: 0
+          });
+        }
       } else {
-        // It was a different, unexpected error. Log it and move on.
+        // It was a different, non-retryable error (like 404, 401)
+        // Or a non-axios error. Log it and move on.
         console.error(`Error processing artist "${artistName}":`, error.message);
         curatedArtistsData.push({
-        artist_name_raw: artistName,
-        spotify_artist_id: null,
-        confidence_score: 0
+          artist_name_raw: artistName,
+          spotify_artist_id: null,
+          confidence_score: 0
         });
       }
     }
