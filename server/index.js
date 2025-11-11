@@ -17,6 +17,9 @@ app.use(express.json());
 const allowedOrigins = [
   'https://live-music-curator.vercel.app', // Production URL
   'https://live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app', // Preview URL
+  // --- Local Development ---
+  'http://172.17.236.175:3001', // Your specific WSL frontend
+  'http://localhost:3001'      // Standard localhost frontend
   // Other URLs can be added here as needed
 ];
 
@@ -41,7 +44,9 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-let sql; // 1. Declare sql here, in the top-level scope
+let isBuilding = false;
+
+let sql;
 
 // Check which environment variables are available
 if (process.env.DATABASE_URL) {
@@ -373,6 +378,13 @@ app.get('/api/search-cities', async (req, res) => {
  * Checks for a cached playlist, or builds one on-demand.
  */
 app.get('/api/playlists', async (req, res) => {
+  if (isBuilding) { // a build is already in progress and the user needs to wait
+    console.warn("WARN: A build is already in progress. Rejecting new request.");
+    // 429 means "Too Many Requests"
+    return res.status(429).json({ error: 'A playlist is already being built. Please try again in a few minutes.' });
+  }
+  isBuilding = true; // Set the flag to indicate a build is in progress
+
   // We now expect the client to send us the exact lat/lon
   const { city, date, lat, lon } = req.query;
   const number_of_songs = 2;
@@ -479,9 +491,11 @@ app.get('/api/playlists', async (req, res) => {
     }
 
   } catch (error) {
-    // This is the main safety net
     console.error('Error in /api/playlists logic:', error.message);
     return res.status(500).json({ error: 'Internal server error.' });
+  } finally {
+    isBuilding = false;
+    console.log("Build finished. Releasing lock.");
   }
 });
 
