@@ -9,6 +9,8 @@ type CitySuggestion = {
   longitude: number;
 };
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://172.17.236.175:3000';
+
 export default function HomePage() {
   // --- 1. Define our State ---
   // State for the city autocomplete
@@ -25,9 +27,9 @@ export default function HomePage() {
   // Get today's date and format it
   const today = new Date();
   const todayString = today.toISOString().split('T')[0];
-  // Get the date 7 days from now
+  // Get the date 30 days from now
   const maxDate = new Date();
-  maxDate.setDate(today.getDate() + 7);
+  maxDate.setDate(today.getDate() + 30);
   const maxDateString = maxDate.toISOString().split('T')[0];
   
     // --- 3. Autocomplete API Logic (with Debouncing) ---
@@ -43,7 +45,7 @@ export default function HomePage() {
     const timer = setTimeout(async () => {
       try {
         // Call our new backend endpoint
-        const response = await fetch(`http://172.17.236.175:3000/api/search-cities?q=${encodeURIComponent(searchQuery)}`);
+        const response = await fetch(`${API_URL}/api/search-cities?q=${encodeURIComponent(searchQuery)}`);
         if (!response.ok) {
           throw new Error('Failed to fetch city suggestions');
         }
@@ -100,7 +102,7 @@ export default function HomePage() {
       return;
     }
     if (date < todayString || date > maxDateString) {
-      setError('Please select a valid date (today or up to 7 days from now).');
+      setError('Please select a valid date (today or up to 30 days from now).');
       return;
     }
     console.log('Button clicked!');
@@ -122,7 +124,7 @@ export default function HomePage() {
       });
       // We're calling our own server, which is on port 3000
       // Use the WSL IP address for the fetch request
-      const response = await fetch(`http://172.17.236.175:3000/api/playlists?${queryParams}`);
+      const response = await fetch(`${API_URL}/api/playlists?${queryParams}`);
 
       if (!response.ok) {
         // Try to get the error message from the server's JSON response
@@ -168,9 +170,8 @@ export default function HomePage() {
         {/* --- Content with warm, light text colors --- */}
         <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Curator</h1>
         <p className="text-black mb-6">
-          Enter a date and city to create a playlist of artists playing music in anywhere in the world sometime in the next week.
+          Enter a city and date to create a playlist of artists playing music anywhere in the world in the next 30 days.
         </p>
-        
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-4 mt-4">
 

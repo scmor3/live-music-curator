@@ -1,3 +1,5 @@
+console.log("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
+
 // --- Imports ---
 const express = require('express');
 const axios = require('axios');
@@ -11,21 +13,61 @@ require('dotenv').config();
 const app = express();
 const port = 3000;
 app.use(express.json());
+// Whitelist of all allowed frontend URLs
+const allowedOrigins = [
+  'https://live-music-curator.vercel.app', // Production URL
+  'https://live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app', // Preview URL
+  // --- Local Development ---
+  'http://172.17.236.175:3001', // Your specific WSL frontend
+  'http://localhost:3001'      // Standard localhost frontend
+  // Other URLs can be added here as needed
+];
+
 const corsOptions = {
-  origin: 'http://172.17.236.175:3001' // Only allow requests from our frontend
+  origin: function (origin, callback) {
+    
+    // Show us the exact origin Vercel is sending.
+    console.log('CORS CHECK: Received origin:', origin);
+
+    // Check if the incoming request's 'origin' is in our whitelist
+    if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
+      // If it is (or a server-to-server request), allow it.
+      callback(null, true);
+    } else {
+      // If it's not in the whitelist, block it.
+      console.error('CORS BLOCKED:', origin); // Log the blocked origin
+      
+      // Send 'false' to block the request, instead of an Error to avoid crashing the server.
+      callback(null, false); 
+    }
+  }
 };
 app.use(cors(corsOptions));
 
-// Create a single, shared database connection pool
-const sql = postgres({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  // quiet postgres console logs
-  onnotice: () => {}, 
-});
+let isBuilding = false;
+
+let sql;
+
+// Check which environment variables are available
+if (process.env.DATABASE_URL) {
+  // --- PRODUCTION ---
+  // Render provides the DATABASE_URL. Use it.
+  console.log('Connecting to database using DATABASE_URL...');
+  sql = postgres(process.env.DATABASE_URL);
+} else {
+  // --- LOCAL ---
+  // We're local. Use the .env file's separate variables.
+  console.log('Connecting to database using local .env variables...');
+  sql = postgres({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT),
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    onnotice: () => {}, // quiet postgres console logs
+  });
+}
+
 
 // --- Constants ---
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
@@ -34,6 +76,11 @@ const MASTER_REFRESH_TOKEN = process.env.MASTER_REFRESH_TOKEN;
 const MASTER_SPOTIFY_ID = process.env.MASTER_SPOTIFY_ID;
 
 // --- Helper Functions ---
+
+/**
+ * A simple helper function to pause execution.
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Uses the master refresh token to get a new, valid master access token.
@@ -100,9 +147,13 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   // Initialize array to hold artist results
   const curatedArtistsData = [];
   const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
+  const retryCounts = {}; // Object to track retries per artist
 
   // Loop through each artist and process
-  for (const artistName of uniqueArtists) {
+  for (let i = 0; i < uniqueArtists.length; i++) {
+    const artistName = uniqueArtists[i];
+
+    console.log(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -139,6 +190,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
         spotifyArtistId = bestMatch.id;
         confidenceScore = 100.00;
 
+        console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId})`);
         curatedArtistsData.push({
           artist_name_raw: artistName,
           spotify_artist_id: spotifyArtistId,
@@ -164,6 +216,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
           confidenceScore = 100.00 - (minDistance * 10);
+          console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance})`);
           curatedArtistsData.push({
             artist_name_raw: artistName,
             spotify_artist_id: spotifyArtistId,
@@ -206,16 +259,65 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
             axiosConfig
           );
           console.log(`Added ${trackUris.length} tracks for "${artistName}"`);
+        } else {
+          console.log(`  -> Found artist, but they have no top tracks. Skipping track add.`);
         }
       }
     } catch (error) {
-      console.error(`Error processing artist "${artistName}":`, error.message);
-      curatedArtistsData.push({
-        artist_name_raw: artistName,
-        spotify_artist_id: null,
-        confidence_score: 0
-      });
-      continue;
+      const status = error.response ? error.response.status : null;
+      // A list of all temporary error codes that we should retry
+      const retryableErrorCodes = [
+        429, // Rate Limit
+        500, // Internal Server Error
+        502, // Bad Gateway
+        503, // Service Unavailable
+        504  // Gateway Timeout
+      ];
+
+      if (status && retryableErrorCodes.includes(status)) {
+        // --- It's a retryable error! ---
+        const currentRetries = retryCounts[artistName] || 0;
+        const MAX_RETRIES = 3;
+
+        if (currentRetries < MAX_RETRIES) {
+          // We have retries left, so try again
+          retryCounts[artistName] = currentRetries + 1; // Increment retry count
+          
+          let waitMs = 3000; // Default 3 second wait for 5xx errors
+          let waitReason = `${status} server error`;
+
+          if (status === 429) {
+            // It's a rate-limit error, check for the 'retry-after' header
+            const retryAfterSeconds = error.response.headers['retry-after'] || 5; 
+            waitMs = Number(retryAfterSeconds) * 1000;
+            waitReason = `429 rate limit`;
+          }
+          
+          console.warn(`Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
+          await sleep(waitMs);
+          
+          i--; // Rewind the loop to retry
+          console.log(`Retrying artist "${artistName}"...`);
+
+        } else {
+          // --- We're out of retries. Give up on this artist. ---
+          console.error(`Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
+          curatedArtistsData.push({
+            artist_name_raw: artistName,
+            spotify_artist_id: null,
+            confidence_score: 0
+          });
+        }
+      } else {
+        // It was a different, non-retryable error (like 404, 401)
+        // Or a non-axios error. Log it and move on.
+        console.error(`Error processing artist "${artistName}":`, error.message);
+        curatedArtistsData.push({
+          artist_name_raw: artistName,
+          spotify_artist_id: null,
+          confidence_score: 0
+        });
+      }
     }
   }
   return { playlistId, curatedArtistsData };
@@ -264,7 +366,9 @@ app.get('/api/search-cities', async (req, res) => {
     res.json(suggestions);
 
   } catch (error) {
-    console.error('Error in /api/search-cities:', error.message);
+  // --- THIS IS THE NEW, BETTER LOG ---
+    console.error('Error in /api/search-cities: FULL ERROR OBJECT:');
+    console.error(error);
     res.status(500).json({ error: 'Error searching for cities.' });
   }
 });
@@ -274,6 +378,13 @@ app.get('/api/search-cities', async (req, res) => {
  * Checks for a cached playlist, or builds one on-demand.
  */
 app.get('/api/playlists', async (req, res) => {
+  if (isBuilding) { // a build is already in progress and the user needs to wait
+    console.warn("WARN: A build is already in progress. Rejecting new request.");
+    // 429 means "Too Many Requests"
+    return res.status(429).json({ error: 'A playlist is already being built. Please try again in a few minutes.' });
+  }
+  isBuilding = true; // Set the flag to indicate a build is in progress
+
   // We now expect the client to send us the exact lat/lon
   const { city, date, lat, lon } = req.query;
   const number_of_songs = 2;
@@ -380,9 +491,11 @@ app.get('/api/playlists', async (req, res) => {
     }
 
   } catch (error) {
-    // This is the main safety net
     console.error('Error in /api/playlists logic:', error.message);
     return res.status(500).json({ error: 'Internal server error.' });
+  } finally {
+    isBuilding = false;
+    console.log("Build finished. Releasing lock.");
   }
 });
 
