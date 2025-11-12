@@ -1,0 +1,1 @@
+CREATE INDEX idx_jobs_status_created_at ON public.playlist_jobs (status, created_at);
