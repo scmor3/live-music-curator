@@ -12,7 +12,7 @@ type CitySuggestion = {
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://172.17.236.175:3000';
 
 export default function HomePage() {
-  // --- 1. Define our State ---
+  // Define our State
   // State for the city autocomplete
   const [searchQuery, setSearchQuery] = useState(''); // What the user is typing, e.g., "Aust"
   const [suggestions, setSuggestions] = useState<CitySuggestion[]>([]); // The list of results, e.g., ["Austin, TX", "Austin, MN"]
@@ -24,6 +24,12 @@ export default function HomePage() {
   const [playlistId, setPlaylistId] = useState(''); // To store the final result
   const [isLoading, setIsLoading] = useState(false); // To show a loading spinner
   const [error, setError] = useState(''); // To show any error messages
+
+  // This is where we'll store the "receipt" (the ID) we get back from the server.
+  const [jobId, setJobId] = useState('');
+  // This will hold user-friendly text like "Your job is pending..." or "Building...".
+  const [pollingStatusMessage, setPollingStatusMessage] = useState('');
+
   // Get today's date and format it
   const today = new Date();
   const todayString = today.toISOString().split('T')[0];
@@ -32,7 +38,7 @@ export default function HomePage() {
   maxDate.setDate(today.getDate() + 30);
   const maxDateString = maxDate.toISOString().split('T')[0];
   
-    // --- 3. Autocomplete API Logic (with Debouncing) ---
+    // Autocomplete API Logic (with Debouncing)
   useEffect(() => {
     // Clear suggestions if the search query is empty
     if (searchQuery.trim() === '') {
@@ -64,7 +70,64 @@ export default function HomePage() {
     
   }, [searchQuery]); // This "effect" re-runs *only* when the 'searchQuery' state changes
   
-  // --- 4. Handler Functions ---
+  // This helper function will check the job status
+  const checkJobStatus = async (id: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/playlists/status?jobId=${id}`);
+      if (!response.ok) {
+        // If the status check fails, we can just let the poller try again
+        console.warn(`Status check failed with status: ${response.status}`);
+        return; 
+      }
+
+      const data = await response.json();
+
+      switch (data.status) {
+        case 'pending':
+          setPollingStatusMessage('Your job is in the queue...');
+          break;
+        case 'building':
+          setPollingStatusMessage('Building your playlist... this may take a minute.');
+          break;
+        case 'complete':
+          // --- SUCCESS! ---
+          setJobId(''); // Clear the job ID
+          setIsLoading(false); // Stop loading
+          setPlaylistId(data.playlistId); // Set the final playlist ID
+          setPollingStatusMessage(''); // Clear the status
+          break;
+        case 'failed':
+          // --- FAILED! ---
+          setJobId(''); // Clear the job ID
+          setIsLoading(false); // Stop loading
+          setError(data.error || 'The job failed for an unknown reason.');
+          setPollingStatusMessage(''); // Clear the status
+          break;
+      }
+    } catch (err) {
+      console.error('Error during polling:', err);
+      // We don't stop polling, just let the next interval try again
+    }
+  };
+
+  // This effect runs whenever 'jobId' changes
+  useEffect(() => {
+    if (jobId) {
+      // A job is active. Start polling.
+      // We check immediately, *then* start the interval
+      checkJobStatus(jobId); 
+
+      const interval = setInterval(() => {
+        checkJobStatus(jobId);
+      }, 5000); // Poll every 5 seconds
+
+      // This is the "cleanup" function.
+      // It runs if the component unmounts OR if jobId changes again.
+      return () => clearInterval(interval);
+    }
+  }, [jobId]); // This hook is sensitive *only* to the 'jobId'
+
+  // --- Handler Functions ---
 
   /**
    * Runs when the user types in the city input box.
@@ -89,6 +152,7 @@ export default function HomePage() {
   };
   /**
    * This function runs when the user clicks "Create"
+   * It now just SUBMITS a job, it doesn't wait for completion.
    */
   const handlePlaylistCreation = async () => {
     // We now check if a city has been *selected*, not just typed
@@ -113,6 +177,7 @@ export default function HomePage() {
     setIsLoading(true); // Show loading spinner
     setError(''); // Clear any old errors
     setPlaylistId(''); // Clear any old results
+    setPollingStatusMessage('Submitting your request...'); // New status message
 
     try {
       // Build the URL for our backend API
@@ -122,10 +187,10 @@ export default function HomePage() {
         lat: selectedCity.latitude.toString(), // Convert number to string for URL
         lon: selectedCity.longitude.toString()  // Convert number to string for URL
       });
-      // We're calling our own server, which is on port 3000
-      // Use the WSL IP address for the fetch request
+
       const response = await fetch(`${API_URL}/api/playlists?${queryParams}`);
 
+      // We're expecting a 202 (Accepted) or 200 (OK)
       if (!response.ok) {
         // Try to get the error message from the server's JSON response
         const errorData = await response.json().catch(() => ({})); // .catch() prevents a second crash if .json() fails
@@ -135,29 +200,28 @@ export default function HomePage() {
 
       // Get the JSON data from the response
       const data = await response.json();
-      
-      if (data.playlistId) {
-        setPlaylistId(data.playlistId); // Success! Save the result
+
+      if (data.jobId) {
+        // SUCCESS! We got a job ID
+        setJobId(data.jobId); // This is the key. We save the job ID.
+        setPollingStatusMessage('Your job is in the queue...');
+        // The new useEffect hook (coming next) will now take over.
       } else {
-        // Handle cases where the server responded OK but had no ID
-        throw new Error('No playlist ID found in response.');
+        throw new Error('Server did not return a valid job ID.');
       }
 
     } catch (err) {
-      // Handle any errors during the fetch
-      console.error('Error fetching playlist:', err);
-      // Check if the error is a TypeError, which could be a network error
-      if (err instanceof TypeError && err.message === 'Failed to fetch') {
-        setError('Network error. Is the server running and firewall configured?');
-      } else if (err instanceof Error) {
+      // Handle any errors during the *submission*
+      console.error('Error creating playlist job:', err);
+      if (err instanceof Error) {
         setError(err.message);
       } else {
         setError('An unknown error occurred. Please try again.');
       }
-    } finally {
-      // This runs no matter what (success or error)
-      setIsLoading(false); // Hide loading spinner
+      setIsLoading(false); // Stop loading if submission fails
     }
+    // We DON'T set isLoading(false) on success,
+    // because the polling is about to begin.
   };
 
   return (
@@ -235,7 +299,7 @@ export default function HomePage() {
             disabled={isLoading || !selectedCity || !date}
             className="py-2 px-4 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-amber-700 disabled:opacity-50 mt-2"
           >
-            {isLoading ? 'Creating Playlist...' : 'Create'}
+            {isLoading ? (pollingStatusMessage || 'Loading...') : 'Create'}
           </button>
         </div>
 
@@ -256,7 +320,7 @@ export default function HomePage() {
                 rel="noopener noreferrer"
                 className="text-dark-pastel-green font-bold hover:underline"
               >
-                Open Playlist on Spotify
+                Click to open Playlist on Spotify
               </a>
             </div>
           ) : null}

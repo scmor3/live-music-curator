@@ -11,7 +11,7 @@ require('dotenv').config();
 
 // --- App & Middleware Configuration ---
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 app.use(express.json());
 // Whitelist of all allowed frontend URLs
 const allowedOrigins = [
@@ -43,8 +43,6 @@ const corsOptions = {
   }
 };
 app.use(cors(corsOptions));
-
-let isBuilding = false;
 
 let sql;
 
@@ -117,7 +115,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   // Check if we found any artists.
   if (!rawArtistList || rawArtistList.length === 0) {
     console.log(`No artists found for "${city}" on ${date}.`);
-    return { playlistId: null, curatedArtistsData: [] };
+    return { playlistId: null };
   }
   // Create the new empty playlist on Spotify
   const playlistData = {
@@ -145,7 +143,6 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   console.log(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
 
   // Initialize array to hold artist results
-  const curatedArtistsData = [];
   const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
   const retryCounts = {}; // Object to track retries per artist
 
@@ -163,13 +160,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
 
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
-        console.log(`No Spotify results for "${artistName}".`);
-        curatedArtistsData.push({
-          // We will add curation_request_id *later*, after the loop
-          artist_name_raw: artistName,
-          spotify_artist_id: null,
-          confidence_score: 0
-        });
+        console.log(`  -> No Spotify results for "${artistName}".`);
         continue;
       }
 
@@ -183,20 +174,11 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       }
 
       let spotifyArtistId = null;
-      let confidenceScore = 0;
 
       if (bestMatch) {
         // Found Exact Match
         spotifyArtistId = bestMatch.id;
-        confidenceScore = 100.00;
-
         console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId})`);
-        curatedArtistsData.push({
-          artist_name_raw: artistName,
-          spotify_artist_id: spotifyArtistId,
-          confidence_score: confidenceScore
-        });
-
       } else {
         // No Exact Match, Check Similarity
         let closestMatch = null;
@@ -215,22 +197,10 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           // Found a close enough match
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
-          confidenceScore = 100.00 - (minDistance * 10);
           console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance})`);
-          curatedArtistsData.push({
-            artist_name_raw: artistName,
-            spotify_artist_id: spotifyArtistId,
-            confidence_score: confidenceScore
-          });
-
         } else {
           // No good match found
           console.log(`No close match for "${artistName}". Skipping.`);
-          curatedArtistsData.push({
-            artist_name_raw: artistName,
-            spotify_artist_id: null,
-            confidence_score: 0
-          });
         }
       }
 
@@ -258,7 +228,9 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
             { uris: trackUris },
             axiosConfig
           );
-          console.log(`Added ${trackUris.length} tracks for "${artistName}"`);
+          // Use bestMatch.name for the log since artistName can be slightly different
+          const logName = bestMatch ? bestMatch.name : artistName;
+          console.log(`  -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
         } else {
           console.log(`  -> Found artist, but they have no top tracks. Skipping track add.`);
         }
@@ -275,7 +247,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       ];
 
       if (status && retryableErrorCodes.includes(status)) {
-        // --- It's a retryable error! ---
+        // It's a retryable error!
         const currentRetries = retryCounts[artistName] || 0;
         const MAX_RETRIES = 3;
 
@@ -302,26 +274,100 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
         } else {
           // --- We're out of retries. Give up on this artist. ---
           console.error(`Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
-          curatedArtistsData.push({
-            artist_name_raw: artistName,
-            spotify_artist_id: null,
-            confidence_score: 0
-          });
         }
       } else {
         // It was a different, non-retryable error (like 404, 401)
         // Or a non-axios error. Log it and move on.
         console.error(`Error processing artist "${artistName}":`, error.message);
-        curatedArtistsData.push({
-          artist_name_raw: artistName,
-          spotify_artist_id: null,
-          confidence_score: 0
-        });
       }
     }
   }
-  return { playlistId, curatedArtistsData };
+  return { playlistId };
 
+}
+
+/**
+ * Finds one 'pending' job, runs it, and updates the DB.
+ * Designed to be called repeatedly by a loop.
+ */
+async function processJobQueue() {
+  let job; // declared outside the 'try' so we can use it in 'catch'
+
+  try {
+    // Find and "Lock" a Job
+    // Find a pending job and update its status
+    // This prevents two workers from accidentally grabbing the same job.
+    job = await sql.begin(async sql => {
+      
+      // Find the oldest 'pending' job.
+      const pendingJobs = await sql`
+        SELECT * FROM playlist_jobs 
+        WHERE status = 'pending' 
+        ORDER BY created_at ASC 
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED;
+      `;
+
+      if (pendingJobs.length === 0) {
+        return null; // No jobs to do.
+      }
+
+      const jobToProcess = pendingJobs[0];
+
+      // "Lock" the job by updating its status
+      const lockedJob = await sql`
+        UPDATE playlist_jobs 
+        SET status = 'building'
+        WHERE id = ${jobToProcess.id} 
+        RETURNING *;
+      `;
+      
+      return lockedJob[0];
+    });
+
+    if (!job) {
+      console.log('WORKER: No pending jobs found.');
+      return; // No jobs to do, so just stop here.
+    }
+
+    // Process the Job
+    console.log(`WORKER: Picked up job ${job.id} for "${job.search_city}" on ${job.search_date}`);
+    
+    const accessToken = await getMasterAccessToken();
+
+    // Run our curation logic with the job's data
+    const { playlistId } = await runCurationLogic(
+      job.search_city,
+      job.search_date,
+      job.number_of_songs,
+      accessToken,
+      job.latitude,
+      job.longitude
+    );
+
+    // Handle Success
+    console.log(`WORKER: Job ${job.id} complete. Playlist ID: ${playlistId}`);
+    await sql`
+      UPDATE playlist_jobs 
+      SET 
+        status = 'complete', 
+        playlist_id = ${playlistId}
+      WHERE id = ${job.id};
+    `;
+  } catch (error) {
+    // Handle Failure
+    console.error(`WORKER: Job ${job ? job.id : 'unknown'} FAILED:`, error.message);
+    if (job) {
+      // If a job fails, we mark it as 'failed' and log the error.
+      await sql`
+        UPDATE playlist_jobs 
+        SET 
+          status = 'failed', 
+          error_message = ${error.message}
+        WHERE id = ${job.id};
+      `;
+    }
+  }
 }
 
 // Main API Routes
@@ -375,21 +421,13 @@ app.get('/api/search-cities', async (req, res) => {
 
 /**
  * Main curation route.
- * Checks for a cached playlist, or builds one on-demand.
+ * Validates input and creates a new 'pending' job in the DB.
  */
 app.get('/api/playlists', async (req, res) => {
-  if (isBuilding) { // a build is already in progress and the user needs to wait
-    console.warn("WARN: A build is already in progress. Rejecting new request.");
-    // 429 means "Too Many Requests"
-    return res.status(429).json({ error: 'A playlist is already being built. Please try again in a few minutes.' });
-  }
-  isBuilding = true; // Set the flag to indicate a build is in progress
-
-  // We now expect the client to send us the exact lat/lon
+  // Validate Input
   const { city, date, lat, lon } = req.query;
   const number_of_songs = 2;
 
-  // Validate Input (Basic)
   if (!city || !date || !lat || !lon) {
     return res.status(400).json({ error: 'Missing required query parameters: city, date, lat, and lon' });
   }
@@ -398,107 +436,249 @@ app.get('/api/playlists', async (req, res) => {
   const latitude = parseFloat(lat);
   const longitude = parseFloat(lon);
 
+  // Check for an Existing Job
+  // Let's not create duplicate jobs. If a user spam-clicks,
+  // just return the job that's already pending or complete.
   try {
-    // Check "Cache" (Our Database)
-    const cacheResult = await sql`
-      SELECT playlist_id 
-      FROM curation_requests 
+    const existingJob = await sql`
+      SELECT id, status, playlist_id 
+      FROM playlist_jobs 
       WHERE 
         search_city = ${city} AND 
         search_date = ${date} AND
-        number_of_songs = ${number_of_songs};
+        number_of_songs = ${number_of_songs}
+      ORDER BY created_at DESC
+      LIMIT 1;
     `;
 
-    if (cacheResult.length > 0) {
-      // Cache HIT: Return the found playlist
-      const playlistId = cacheResult[0].playlist_id; // This could be NULL if no artists were found previously
-      if (playlistId === null) {
-        console.log(`Cache HIT (Negative): No artists found for ${city} on ${date}.`);
-        return res.status(404).json({ error: 'No artists found for this city and date.' });
-      } else {
-        console.log(`Cache HIT (Positive): Found pre-built playlist for ${city} on ${date}.`);
-        return res.json({ 
-          playlistId: playlistId,
-          source: 'cache' 
-        });
-      }
+    if (existingJob.length > 0) {
+      const job = existingJob[0];
+      console.log(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}`);
+      // Return the ID of the job we found.
+      return res.json({ jobId: job.id });
     }
 
-    // Cache MISS: Build the playlist
-    console.log(`Cache MISS: No playlist found for ${city} on ${date}. Building...`);
+    // Create a New Job
+    console.log(`Cache MISS (Job): No job found for ${city} on ${date}. Creating new job...`);
     
-    // First, get a master access token
-    const accessToken = await getMasterAccessToken();
-
-    // Now, run the main curation logic
-    const { playlistId, curatedArtistsData } = await runCurationLogic(
-      city, 
-      date, 
-      number_of_songs, 
-      accessToken, 
-      latitude, 
-      longitude
-    );
-
-    // Save the results to database *after* the logic is done.
-    const curationRequestResult = await sql`
-      INSERT INTO curation_requests (
+    const newJob = await sql`
+      INSERT INTO playlist_jobs (
         search_city,
         search_date,
-        number_of_songs,
-        playlist_id -- This will be 'null' if no artists were found
-      )
-      VALUES (
-        ${city}, 
-        ${date}, 
-        ${number_of_songs}, 
-        ${playlistId} 
+        latitude,
+        longitude,
+        number_of_songs
+      ) VALUES (
+        ${city},
+        ${date},
+        ${latitude},
+        ${longitude},
+        ${number_of_songs}
       )
       RETURNING id;
     `;
-    const curationRequestId = curationRequestResult[0].id;
 
-    // Save the detailed artist results
-    if (curatedArtistsData.length > 0) {
-      // We must add the new curationRequestId to all our objects
-      const artistsToInsert = curatedArtistsData.map(artist => ({
-        ...artist,
-        curation_request_id: curationRequestId 
-      }));
+    const jobId = newJob[0].id;
+    console.log(`Successfully created new job with ID: ${jobId}`);
 
-      console.log(`Saving ${artistsToInsert.length} curated artist results...`);
-      await sql`
-        INSERT INTO curated_artists ${sql(artistsToInsert, 
-          'curation_request_id', 
-          'artist_name_raw', 
-          'spotify_artist_id', 
-          'confidence_score'
-        )}
-      `;
-      console.log('Successfully saved curated artist data.');
-    }
-
-    // Send the final response to the client
-    if (playlistId === null) {
-      // We finished, but found no artists. Send the 404.
-      return res.status(404).json({ error: 'No artists found for this city and date.' });
-    } else {
-      // We finished and created a playlist!
-      return res.json({ 
-        playlistId: playlistId,
-        source: 'new' 
-      });
-    }
+    // Send the job ID back to the user immediately
+    return res.status(202).json({ jobId: jobId }); // 202 means "Accepted"
 
   } catch (error) {
-    console.error('Error in /api/playlists logic:', error.message);
-    return res.status(500).json({ error: 'Internal server error.' });
-  } finally {
-    isBuilding = false;
-    console.log("Build finished. Releasing lock.");
+    console.error('Error in /api/playlists (job creation):', error);
+    return res.status(500).json({ error: 'Error creating new playlist job.' });
   }
 });
 
+/**
+ * Polls for the status of a job.
+ * The frontend will call this route every 5 seconds.
+ */
+app.get('/api/playlists/status', async (req, res) => {
+  const { jobId } = req.query;
+
+  if (!jobId) {
+    return res.status(400).json({ error: 'Missing required query parameter: jobId' });
+  }
+
+  try {
+    const jobResult = await sql`
+      SELECT status, playlist_id, error_message 
+      FROM playlist_jobs 
+      WHERE id = ${jobId};
+    `;
+
+    if (jobResult.length === 0) {
+      return res.status(404).json({ error: 'Job not found.' });
+    }
+
+    const job = jobResult[0];
+
+    // Send the whole job status back to the frontend.
+    // The frontend will decide what to do with this.
+    res.json({
+      status: job.status,
+      playlistId: job.playlist_id,
+      error: job.error_message
+    });
+
+  } catch (error) {
+    console.error('Error in /api/playlists/status:', error);
+    return res.status(500).json({ error: 'Error fetching job status.' });
+  }
+});
+
+/**
+ * Main curation route.
+ * Checks for a cached playlist, or builds one on-demand.
+ */
+// app.get('/api/playlists', async (req, res) => {
+//   // Validate input
+//   const { city, date, lat, lon } = req.query;
+//   const number_of_songs = 2;
+
+//   // Validate Input (Basic)
+//   if (!city || !date || !lat || !lon) {
+//     return res.status(400).json({ error: 'Missing required query parameters: city, date, lat, and lon' });
+//   }
+
+//   // Convert lat/lon to numbers for safety
+//   const latitude = parseFloat(lat);
+//   const longitude = parseFloat(lon);
+
+//   try {
+//     // Check "Cache" (Our Database)
+//     const cacheResult = await sql`
+//       SELECT playlist_id 
+//       FROM curation_requests 
+//       WHERE 
+//         search_city = ${city} AND 
+//         search_date = ${date} AND
+//         number_of_songs = ${number_of_songs};
+//     `;
+
+//     if (cacheResult.length > 0) {
+//       // Cache HIT: Return the found playlist
+//       const playlistId = cacheResult[0].playlist_id; // This could be NULL if no artists were found previously
+//       if (playlistId === null) {
+//         console.log(`Cache HIT (Negative): No artists found for ${city} on ${date}.`);
+//         return res.status(404).json({ error: 'No artists found for this city and date.' });
+//       } else {
+//         console.log(`Cache HIT (Positive): Found pre-built playlist for ${city} on ${date}.`);
+//         return res.json({ 
+//           playlistId: playlistId,
+//           source: 'cache' 
+//         });
+//       }
+//     }
+
+//     // Cache MISS: Build the playlist
+//     console.log(`Cache MISS: No playlist found for ${city} on ${date}. Building...`);
+    
+//     // First, get a master access token
+//     const accessToken = await getMasterAccessToken();
+
+//     // Now, run the main curation logic
+//     const { playlistId, curatedArtistsData } = await runCurationLogic(
+//       city, 
+//       date, 
+//       number_of_songs, 
+//       accessToken, 
+//       latitude, 
+//       longitude
+//     );
+
+//     // Save the results to database *after* the logic is done.
+//     const curationRequestResult = await sql`
+//       INSERT INTO curation_requests (
+//         search_city,
+//         search_date,
+//         number_of_songs,
+//         playlist_id -- This will be 'null' if no artists were found
+//       )
+//       VALUES (
+//         ${city}, 
+//         ${date}, 
+//         ${number_of_songs}, 
+//         ${playlistId} 
+//       )
+//       RETURNING id;
+//     `;
+//     const curationRequestId = curationRequestResult[0].id;
+
+//     // Save the detailed artist results
+//     if (curatedArtistsData.length > 0) {
+//       // We must add the new curationRequestId to all our objects
+//       const artistsToInsert = curatedArtistsData.map(artist => ({
+//         ...artist,
+//         curation_request_id: curationRequestId 
+//       }));
+
+//       console.log(`Saving ${artistsToInsert.length} curated artist results...`);
+//       await sql`
+//         INSERT INTO curated_artists ${sql(artistsToInsert, 
+//           'curation_request_id', 
+//           'artist_name_raw', 
+//           'spotify_artist_id', 
+//           'confidence_score'
+//         )}
+//       `;
+//       console.log('Successfully saved curated artist data.');
+//     }
+
+//     // Send the final response to the client
+//     if (playlistId === null) {
+//       // We finished, but found no artists. Send the 404.
+//       return res.status(404).json({ error: 'No artists found for this city and date.' });
+//     } else {
+//       // We finished and created a playlist!
+//       return res.json({ 
+//         playlistId: playlistId,
+//         source: 'new' 
+//       });
+//     }
+
+//   } catch (error) {
+//     console.error('Error in /api/playlists logic:', error.message);
+//     return res.status(500).json({ error: 'Internal server error.' });
+//   } finally {
+//     isBuilding = false;
+//     console.log("Build finished. Releasing lock.");
+//   }
+// });
+
+/**
+ * The Worker Loop
+ * Starts the queue processing when the server boots.
+ */
+function startWorker() {
+  console.log('Worker loop starting... Will check for jobs every 10 seconds.');
+  
+  // This lock prevents our worker from "overlapping"
+  // if a single job takes longer than 10s to run.
+  let isWorkerRunning = false;
+
+  const runWorker = async () => {
+    if (isWorkerRunning) {
+      console.log('Worker is already running. Skipping this interval.');
+      return;
+    }
+    
+    isWorkerRunning = true;
+    console.log('Worker checking for jobs...');
+    try {
+      await processJobQueue();
+    } catch (err) {
+      console.error('Unhandled critical error in worker loop:', err);
+    } finally {
+      isWorkerRunning = false;
+    }
+  };
+
+  setInterval(runWorker, 10000);
+}
+
+startWorker();
 
 // Start the Server
 app.listen(port, '0.0.0.0', () => {
