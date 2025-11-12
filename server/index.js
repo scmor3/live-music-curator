@@ -335,10 +335,13 @@ async function processJobQueue() {
     
     const accessToken = await getMasterAccessToken();
 
+    // Convert the 'Date' object back to a YYYY-MM-DD string
+    const dateString = job.search_date.toISOString().split('T')[0];
+
     // Run our curation logic with the job's data
     const { playlistId } = await runCurationLogic(
       job.search_city,
-      job.search_date,
+      dateString,
       job.number_of_songs,
       accessToken,
       job.latitude,
