@@ -2,6 +2,7 @@
 
 // Import 'useState' from React
 import { useState, useEffect } from 'react';
+import { text } from 'stream/consumers';
 
 type CitySuggestion = {
   name: string;
@@ -333,19 +334,35 @@ export default function HomePage() {
                 {/* Added text-left here so the checkboxes align nicely */}
                 <div className="p-3 border border-zinc-600 rounded-lg bg-zinc-700 grid grid-cols-2 gap-2">
                   {[
-                    'Country', 'Rock', 'Pop', 'Hip Hop', 
-                    'Electronic', 'Jazz', 'R&B / Soul', 'Folk & Acoustic'
+                    { text: 'Country', value: 'country' },
+                    { text: 'Rock', value: 'rock' },
+                    { text: 'Pop', value: 'pop' },
+                    { text: 'Hip Hop / Rap', value: 'hip hop' },
+                    { text: 'Electronic', value: 'electronic' },
+                    { text: 'Jazz', value: 'jazz' },
+                    { text: 'R&B / Soul', value: 'r&b' },
+                    { text: 'Folk', value: 'folk' },
+                    { text: 'Latin', value: 'latin' },
+                    { text: 'Acoustic', value: 'acoustic' },
+                    { text: 'Metal', value: 'metal' },
+                    { text: 'Punk', value: 'punk' },
+                    { text: 'Classical', value: 'classical' },
+                    { text: 'Reggae', value: 'reggae' },
+                    { text: 'Blues', value: 'blues' },
+                    { text: 'Indie', value: 'indie' },
+                    { text: 'Gospel', value: 'gospel' },
+                    { text: 'Comedy', value: 'comedy' }
                   ].map((genre) => (
-                    <label key={genre} className="flex items-center space-x-2 text-stone-100 cursor-pointer">
+                    <label key={genre.value} className="flex items-center space-x-2 text-stone-100 cursor-pointer">
                       <input
                         type="checkbox"
-                        value={genre.toLowerCase()}
-                        checked={excludedGenres.includes(genre.toLowerCase())}
+                        value={genre.value}
+                        checked={excludedGenres.includes(genre.value)}
                         onChange={handleGenreChange}
                         disabled={isLoading}
                         className="rounded text-amber-600 focus:ring-amber-500"
                       />
-                      <span className="text-sm">{genre}</span>
+                      <span className="text-sm">{genre.text}</span>
                     </label>
                   ))}
                 </div>

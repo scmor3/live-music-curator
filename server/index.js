@@ -117,9 +117,17 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
     console.log(`No artists found for "${city}" on ${date}.`);
     return { playlistId: null };
   }
+
+  let nameSuffix = ''; // Start with an empty suffix
+  if (excludedGenres && excludedGenres.length > 0) {
+    // Create a "pretty" version of the genres, e.g., "Country, Jazz"
+    const prettyGenres = excludedGenres.map(g => g.charAt(0).toUpperCase() + g.slice(1)).join(', ');
+    nameSuffix = ` (Excl: ${prettyGenres})`;
+  }
+
   // Create the new empty playlist on Spotify
   const playlistData = {
-    name: `${city} ${date} live music`,
+    name: `${city} ${date} live music${nameSuffix}`,
     description: `Artists performing in ${city} on ${date}, curated by Live Music Curator.`,
     public: true
   };
@@ -141,6 +149,39 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
   console.log(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
+
+  // --- SYNONYM MAP ---
+  const genreSynonymMap = {
+    'hip hop': ['rap'],
+    'r&b': ['soul'],
+    'electronic': [
+      'edm', 'techno', 'house', 'dubstep', 'trance', 
+      'psytrance', 'downtempo', 'bass music', 'riddim'
+    ],
+    'punk': ['hardcore', 'post-punk', 'screamo', 'emo'],
+    'latin': [
+      'reggaeton', 'cumbia', 'banda', 'sertanejo', 
+      'dembow', 'grupera', 'duranguense', 'piseiro'
+    ],
+    'blues': ['boogie-woogie'],
+    'folk': ['americana'],
+    'classical': ['orchestral']
+  };
+
+  // Create a new, expanded list of genres to filter
+  let expandedExcludedGenres = [...(excludedGenres || [])];
+
+  if (excludedGenres) {
+    excludedGenres.forEach(genre => {
+      if (genreSynonymMap[genre]) {
+        expandedExcludedGenres = [
+          ...expandedExcludedGenres, 
+          ...genreSynonymMap[genre]
+        ];
+      }
+    });
+  }
+// --- END: SYNONYM MAP ---
 
   // Initialize array to hold artist results
   const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
@@ -206,18 +247,18 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
 
       // Genre Filtering Logic
       if (excludedGenres && excludedGenres.length > 0 && bestMatch && bestMatch.genres && bestMatch.genres.length > 0) {
-      // Check if *any* of the artist's genres match *any* of the excluded genres
-      const hasExcludedGenre = excludedGenres.some(excludedGenre => 
-        bestMatch.genres.some(artistGenre => 
-          artistGenre.toLowerCase().includes(excludedGenre.toLowerCase())
-        )
-      );
+        // Check if *any* of the artist's genres match *any* of the excluded genres
+        const hasExcludedGenre = excludedGenres.some(excludedGenre => 
+          bestMatch.genres.some(artistGenre => 
+            artistGenre.toLowerCase().includes(excludedGenre.toLowerCase())
+          )
+        );
 
-      if (hasExcludedGenre) {
-        // This artist MATCHES the exclusion list, so we SKIP them.
-        console.log(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
-        spotifyArtistId = null; // Set to null to skip track-adding
-      }
+        if (hasExcludedGenre) {
+          // This artist MATCHES the exclusion list, so we SKIP them.
+          console.log(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
+          spotifyArtistId = null; // Set to null to skip track-adding
+        }
     }
 
       // If we have a match, add tracks
@@ -310,6 +351,27 @@ async function processJobQueue() {
   let job; // declared outside the 'try' so we can use it in 'catch'
 
   try {
+    // find any job that's been "building" for too long
+    // (e.g., if the server crashed) and mark it as 'failed'.
+    try {
+      const zombieJobs = await sql`
+        UPDATE playlist_jobs 
+        SET 
+          status = 'failed', 
+          error_message = 'Build timed out and was reset'
+        WHERE status = 'building'
+        AND updated_at < NOW() - INTERVAL '30 minutes'
+        RETURNING id;
+      `;
+
+      if (zombieJobs.length > 0) {
+        console.warn(`WORKER: Found and reset ${zombieJobs.length} zombie job(s).`);
+      }
+    } catch (reaperError) {
+      // If this fails, the DB is probably down. Log it and stop.
+      console.error('WORKER: CRITICAL! Zombie reaper FAILED:', reaperError.message);
+      return; // Stop the worker run
+    }
     // Find and "Lock" a Job
     // Find a pending job and update its status
     // This prevents two workers from accidentally grabbing the same job.
@@ -475,6 +537,10 @@ app.get('/api/playlists', async (req, res) => {
   const latitude = parseFloat(lat);
   const longitude = parseFloat(lon);
 
+  // Convert the comma-separated string of back into an array for the DB
+  // If 'genres' is undefined or "", this will become 'null'
+  const genresArray = genres ? genres.split(',') : null;
+
   // Check for an Existing Job
   // Let's not create duplicate jobs. If a user spam-clicks,
   // just return the job that's already pending or complete.
@@ -485,7 +551,8 @@ app.get('/api/playlists', async (req, res) => {
       WHERE 
         search_city = ${city} AND 
         search_date = ${date} AND
-        number_of_songs = ${number_of_songs}
+        number_of_songs = ${number_of_songs} AND
+        excluded_genres IS NOT DISTINCT FROM ${genresArray}
       ORDER BY created_at DESC
       LIMIT 1;
     `;
@@ -497,13 +564,9 @@ app.get('/api/playlists', async (req, res) => {
       return res.json({ jobId: job.id });
     }
 
-    // Convert the comma-separated string of back into an array for the DB
-    // If 'genres' is undefined or "", this will become 'null'
-    const genresArray = genres ? genres.split(',') : null;
-
     // Create a New Job
     // Add the 'excluded_genres' array to your INSERT
-    console.log(`Cache MISS (Job): No job found for ${city} on ${date}. Creating new job...`);
+    console.log(`Cache MISS (Job): No job found for ${city} on ${date} excluding: ${genres}. Creating new job...`);
     
     const newJob = await sql`
       INSERT INTO playlist_jobs (
