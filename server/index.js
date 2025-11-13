@@ -109,7 +109,7 @@ async function getMasterAccessToken() {
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude, genreFilter) {
+async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres) {
   // Get the raw artist list by calling our scraper
   const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
   // Check if we found any artists.
@@ -512,14 +512,14 @@ app.get('/api/playlists', async (req, res) => {
         latitude,
         longitude,
         number_of_songs,
-        genre
+        excluded_genres
       ) VALUES (
         ${city},
         ${date},
         ${latitude},
         ${longitude},
         ${number_of_songs},
-        ${genre || null}
+        ${genresArray}
       )
       RETURNING id;
     `;

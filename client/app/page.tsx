@@ -321,7 +321,7 @@ export default function HomePage() {
             {/* The Toggle Button */}
             <button 
               onClick={() => setShowGenres(!showGenres)} 
-              className="text-sm text-zinc-600 hover:text-black underline underline-offset-2 decoration-zinc-400 hover:decoration-black transition-all"
+              className="text-sm text-zinc-600 hover:text-black underline underline-offset-2 decoration-zinc-400 hover:decoration-black transition-all cursor-pointer"
               type="button"
             >
               {showGenres ? 'Hide Filters' : 'Exclude Genres (Optional)'}
@@ -349,8 +349,8 @@ export default function HomePage() {
                     </label>
                   ))}
                 </div>
-                <p className="text-xs text-zinc-600 mt-1 px-1">
-                  Note: We'll try to filter, but many artists don't have genre tags on Spotify.
+                <p className="text-xs text-center text-zinc-600 mt-1 px-1">
+                  Note: We'll try to filter out your excluded genres, but many artists don't have genre tags on Spotify.
                 </p>
               </div>
             )}
