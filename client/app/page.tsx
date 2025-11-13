@@ -17,10 +17,11 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState(''); // What the user is typing, e.g., "Aust"
   const [suggestions, setSuggestions] = useState<CitySuggestion[]>([]); // The list of results, e.g., ["Austin, TX", "Austin, MN"]
   const [selectedCity, setSelectedCity] = useState<CitySuggestion | null>(null); // The final city the user clicked on
+  const [genre, setGenre] = useState(''); // Holds the selected genre
 
   const [date, setDate] = useState('');
   
-  // We need new state variables to track the API call
+  // We need state variables to track the API call
   const [playlistId, setPlaylistId] = useState(''); // To store the final result
   const [isLoading, setIsLoading] = useState(false); // To show a loading spinner
   const [error, setError] = useState(''); // To show any error messages
@@ -29,6 +30,7 @@ export default function HomePage() {
   const [jobId, setJobId] = useState('');
   // This will hold user-friendly text like "Your job is pending..." or "Building...".
   const [pollingStatusMessage, setPollingStatusMessage] = useState('');
+  
 
   // Get today's date and format it
   const today = new Date();
@@ -50,13 +52,12 @@ export default function HomePage() {
     // It waits 300ms after the user stops typing before calling the API.
     const timer = setTimeout(async () => {
       try {
-        // Call our new backend endpoint
         const response = await fetch(`${API_URL}/api/search-cities?q=${encodeURIComponent(searchQuery)}`);
         if (!response.ok) {
           throw new Error('Failed to fetch city suggestions');
         }
         const data = await response.json();
-        setSuggestions(data); // Update the state with the new suggestions
+        setSuggestions(data);
       } catch (err) {
         console.error('Error fetching city suggestions:', err);
         setSuggestions([]); // Clear suggestions on error
@@ -177,7 +178,7 @@ export default function HomePage() {
     setIsLoading(true); // Show loading spinner
     setError(''); // Clear any old errors
     setPlaylistId(''); // Clear any old results
-    setPollingStatusMessage('Submitting your request...'); // New status message
+    setPollingStatusMessage('Submitting your request...');
 
     try {
       // Build the URL for our backend API
@@ -187,6 +188,11 @@ export default function HomePage() {
         lat: selectedCity.latitude.toString(), // Convert number to string for URL
         lon: selectedCity.longitude.toString()  // Convert number to string for URL
       });
+
+      // If a genre is selected (i.e., not "All Genres"), add it to the query.
+      if (genre) {
+        queryParams.append('genre', genre);
+      }
 
       const response = await fetch(`${API_URL}/api/playlists?${queryParams}`);
 
@@ -205,7 +211,6 @@ export default function HomePage() {
         // SUCCESS! We got a job ID
         setJobId(data.jobId); // This is the key. We save the job ID.
         setPollingStatusMessage('Your job is in the queue...');
-        // The new useEffect hook (coming next) will now take over.
       } else {
         throw new Error('Server did not return a valid job ID.');
       }
@@ -239,7 +244,7 @@ export default function HomePage() {
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-4 mt-4">
 
-          {/* --- NEW: City Autocomplete Wrapper --- */}
+          {/* --- City Autocomplete Wrapper --- */}
           {/* 'relative' is crucial for positioning the dropdown */}
           <div className="w-full max-w-xs relative">
             <label htmlFor="city-search" className="block text-sm font-medium text-black mb-1">
@@ -255,7 +260,7 @@ export default function HomePage() {
               // 'w-full' makes it fill the 'max-w-xs' container
               className="p-2 border border-zinc-600 rounded-lg text-stone-100 bg-zinc-700 w-full"
             />
-            {/* --- NEW: Suggestions Dropdown --- */}
+            {/* --- Suggestions Dropdown --- */}
             {/* This list only renders if there are suggestions */}
             {suggestions.length > 0 && (
               <ul className="absolute z-10 w-full bg-zinc-700 border border-zinc-600 rounded-lg mt-1 max-h-60 overflow-y-auto">
@@ -272,6 +277,34 @@ export default function HomePage() {
             )}
           </div>
           {/* --- END: City Autocomplete --- */}
+          
+          {/* --- GENRE DROPDOWN --- */}
+          <div className="w-full max-w-xs">
+            <label htmlFor="genre-select" className="block text-sm font-medium text-black mb-1">
+              Exclude Genres (Optional):
+            </label>
+            <select
+              id="genre-select"
+              value={genre}
+              onChange={(e) => setGenre(e.target.value)}
+              disabled={isLoading}
+              className="p-2 border border-zinc-600 rounded-lg text-stone-100 bg-zinc-700 w-full"
+            >
+              <option value=""></option>
+              <option value="rock">Rock</option>
+              <option value="pop">Pop</option>
+              <option value="hip hop">Hip Hop</option>
+              <option value="electronic">Electronic</option>
+              <option value="jazz">Jazz</option>
+              <option value="r&b / soul">R&B / Soul</option>
+              <option value="folk & acoustic">Folk & Acoustic</option>
+              <option value="country">Country</option>
+            </select>
+            <p className="text-xs text-zinc-600 mt-1 px-1 text-left">
+              Note: We'll try to filter, but many artists don't have genre tags on Spotify.
+            </p>
+          </div>
+          {/* --- END: Genre Dropdown --- */}
 
           {/* --- Date Picker --- */}
           {/* This is now a direct child of the 'gap-4' flex container */}
