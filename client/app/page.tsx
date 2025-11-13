@@ -17,8 +17,9 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState(''); // What the user is typing, e.g., "Aust"
   const [suggestions, setSuggestions] = useState<CitySuggestion[]>([]); // The list of results, e.g., ["Austin, TX", "Austin, MN"]
   const [selectedCity, setSelectedCity] = useState<CitySuggestion | null>(null); // The final city the user clicked on
-  const [genre, setGenre] = useState(''); // Holds the selected genre
-
+  const [excludedGenres, setExcludedGenres] = useState<string[]>([]); // Holds the selected genres
+  const [showGenres, setShowGenres] = useState(false);
+  
   const [date, setDate] = useState('');
   
   // We need state variables to track the API call
@@ -152,6 +153,20 @@ export default function HomePage() {
     setSuggestions([]);            // Close the dropdown
   };
   /**
+   * Runs when a user checks or unchecks a genre box.
+   */
+  const handleGenreChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { value, checked } = e.target;
+    
+    if (checked) {
+      // It was checked: add it to the array
+      setExcludedGenres(prev => [...prev, value]);
+    } else {
+      // It was unchecked: filter it out of the array
+      setExcludedGenres(prev => prev.filter(genre => genre !== value));
+    }
+  };
+  /**
    * This function runs when the user clicks "Create"
    * It now just SUBMITS a job, it doesn't wait for completion.
    */
@@ -189,9 +204,11 @@ export default function HomePage() {
         lon: selectedCity.longitude.toString()  // Convert number to string for URL
       });
 
-      // If a genre is selected (i.e., not "All Genres"), add it to the query.
-      if (genre) {
-        queryParams.append('genre', genre);
+      // If the user has selected any genres...
+      if (excludedGenres.length > 0) {
+        // ...join them into a single, comma-separated string
+        const genreString = excludedGenres.join(',');
+        queryParams.append('genres', genreString); // 'genres' (plural)
       }
 
       const response = await fetch(`${API_URL}/api/playlists?${queryParams}`);
@@ -277,34 +294,6 @@ export default function HomePage() {
             )}
           </div>
           {/* --- END: City Autocomplete --- */}
-          
-          {/* --- GENRE DROPDOWN --- */}
-          <div className="w-full max-w-xs">
-            <label htmlFor="genre-select" className="block text-sm font-medium text-black mb-1">
-              Exclude Genres (Optional):
-            </label>
-            <select
-              id="genre-select"
-              value={genre}
-              onChange={(e) => setGenre(e.target.value)}
-              disabled={isLoading}
-              className="p-2 border border-zinc-600 rounded-lg text-stone-100 bg-zinc-700 w-full"
-            >
-              <option value=""></option>
-              <option value="rock">Rock</option>
-              <option value="pop">Pop</option>
-              <option value="hip hop">Hip Hop</option>
-              <option value="electronic">Electronic</option>
-              <option value="jazz">Jazz</option>
-              <option value="r&b / soul">R&B / Soul</option>
-              <option value="folk & acoustic">Folk & Acoustic</option>
-              <option value="country">Country</option>
-            </select>
-            <p className="text-xs text-zinc-600 mt-1 px-1 text-left">
-              Note: We'll try to filter, but many artists don't have genre tags on Spotify.
-            </p>
-          </div>
-          {/* --- END: Genre Dropdown --- */}
 
           {/* --- Date Picker --- */}
           {/* This is now a direct child of the 'gap-4' flex container */}
@@ -324,6 +313,49 @@ export default function HomePage() {
               className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark"
             />
           </div>
+          {/* --- END: Date Picker --- */}
+
+          {/* --- COLLAPSIBLE GENRE FILTER --- */}
+          <div className="w-full max-w-xs text-center">
+            
+            {/* The Toggle Button */}
+            <button 
+              onClick={() => setShowGenres(!showGenres)} 
+              className="text-sm text-zinc-600 hover:text-black underline underline-offset-2 decoration-zinc-400 hover:decoration-black transition-all"
+              type="button"
+            >
+              {showGenres ? 'Hide Filters' : 'Exclude Genres (Optional)'}
+            </button>
+
+            {/* The Content (Checkboxes) */}
+            {showGenres && (
+              <div className="mt-3 text-left"> 
+                {/* Added text-left here so the checkboxes align nicely */}
+                <div className="p-3 border border-zinc-600 rounded-lg bg-zinc-700 grid grid-cols-2 gap-2">
+                  {[
+                    'Country', 'Rock', 'Pop', 'Hip Hop', 
+                    'Electronic', 'Jazz', 'R&B / Soul', 'Folk & Acoustic'
+                  ].map((genre) => (
+                    <label key={genre} className="flex items-center space-x-2 text-stone-100 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        value={genre.toLowerCase()}
+                        checked={excludedGenres.includes(genre.toLowerCase())}
+                        onChange={handleGenreChange}
+                        disabled={isLoading}
+                        className="rounded text-amber-600 focus:ring-amber-500"
+                      />
+                      <span className="text-sm">{genre}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-zinc-600 mt-1 px-1">
+                  Note: We'll try to filter, but many artists don't have genre tags on Spotify.
+                </p>
+              </div>
+            )}
+          </div>
+          {/* --- END: COLLAPSIBLE GENRE FILTER --- */}
 
           {/* --- Submit Button --- */}
           {/* This is now a direct child of the 'gap-4' flex container */}
