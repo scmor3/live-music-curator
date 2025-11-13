@@ -109,7 +109,7 @@ async function getMasterAccessToken() {
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude) {
+async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude, genreFilter) {
   // Get the raw artist list by calling our scraper
   const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
   // Check if we found any artists.
@@ -178,7 +178,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       if (bestMatch) {
         // Found Exact Match
         spotifyArtistId = bestMatch.id;
-        console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId})`);
+        console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId}) & genres: ${bestMatch.genres.join(', ')}`);
       } else {
         // No Exact Match, Check Similarity
         let closestMatch = null;
@@ -197,10 +197,27 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           // Found a close enough match
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
-          console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance})`);
+          console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
         } else {
           // No good match found
           console.log(`No close match for "${artistName}". Skipping.`);
+        }
+      }
+
+      // Genre Filtering Logic
+      if (genreFilter && bestMatch && bestMatch.genres) {
+        // A genre filter exists! Let's check the artist's genres.
+        // We check if *any* of the artist's genres (e.g., "indie rock")
+        // contain our simple filter (e.g., "rock").
+        const hasMatchingGenre = bestMatch.genres.some(
+          artistGenre => artistGenre.toLowerCase().includes(genreFilter.toLowerCase())
+        );
+
+        if (!hasMatchingGenre) {
+          console.log(`  -> SKIPPING: Artist "${bestMatch.name}" genres (${bestMatch.genres.join(', ')}) do not match filter "${genreFilter}".`);
+          spotifyArtistId = null; // Set to null to skip track-adding
+        } else {
+          console.log(`  -> Genre Match: Artist "${bestMatch.name}" has matching genre. Proceeding...`);
         }
       }
 
@@ -345,7 +362,8 @@ async function processJobQueue() {
       job.number_of_songs,
       accessToken,
       job.latitude,
-      job.longitude
+      job.longitude,
+      job.genre
     );
 
     // Handle Success
@@ -428,7 +446,7 @@ app.get('/api/search-cities', async (req, res) => {
  */
 app.get('/api/playlists', async (req, res) => {
   // Validate Input
-  const { city, date, lat, lon } = req.query;
+  const { city, date, lat, lon, genre } = req.query;
   const number_of_songs = 2;
 
   if (!city || !date || !lat || !lon) {
@@ -470,13 +488,15 @@ app.get('/api/playlists', async (req, res) => {
         search_date,
         latitude,
         longitude,
-        number_of_songs
+        number_of_songs.
+        genre
       ) VALUES (
         ${city},
         ${date},
         ${latitude},
         ${longitude},
-        ${number_of_songs}
+        ${number_of_songs},
+        ${genre || null}
       )
       RETURNING id;
     `;
