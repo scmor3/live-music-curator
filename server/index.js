@@ -205,20 +205,20 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       }
 
       // Genre Filtering Logic
-      if (genreFilter && bestMatch && bestMatch.genres) {
-        // Check if *any* of the artist's genres (e.g., "country rock")
-        // contain our simple filter (e.g., "country").
-        const hasExcludedGenre = bestMatch.genres.some(
-          artistGenre => artistGenre.toLowerCase().includes(genreFilter.toLowerCase())
-        );
+      if (excludedGenres && excludedGenres.length > 0 && bestMatch && bestMatch.genres && bestMatch.genres.length > 0) {
+      // Check if *any* of the artist's genres match *any* of the excluded genres
+      const hasExcludedGenre = excludedGenres.some(excludedGenre => 
+        bestMatch.genres.some(artistGenre => 
+          artistGenre.toLowerCase().includes(excludedGenre.toLowerCase())
+        )
+      );
 
-        if (hasExcludedGenre) {
-          // This artist MATCHES the exclusion filter, so we SKIP them.
-          console.log(`  -> SKIPPING: Artist "${bestMatch.name}" has excluded genre. (${bestMatch.genres.join(', ')})`);
-          spotifyArtistId = null; // Set to null to skip track-adding
-        }
-        // If 'hasExcludedGenre' is false, we do nothing and proceed.
+      if (hasExcludedGenre) {
+        // This artist MATCHES the exclusion list, so we SKIP them.
+        console.log(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
+        spotifyArtistId = null; // Set to null to skip track-adding
       }
+    }
 
       // If we have a match, add tracks
       if (spotifyArtistId) {
@@ -362,7 +362,7 @@ async function processJobQueue() {
       accessToken,
       job.latitude,
       job.longitude,
-      job.genre
+      job.excluded_genres
     );
 
     // Handle Success
@@ -464,7 +464,7 @@ app.get('/api/search-cities', async (req, res) => {
  */
 app.get('/api/playlists', async (req, res) => {
   // Validate Input
-  const { city, date, lat, lon, genre } = req.query;
+  const { city, date, lat, lon, genres } = req.query;
   const number_of_songs = 2;
 
   if (!city || !date || !lat || !lon) {
@@ -497,7 +497,12 @@ app.get('/api/playlists', async (req, res) => {
       return res.json({ jobId: job.id });
     }
 
+    // Convert the comma-separated string of back into an array for the DB
+    // If 'genres' is undefined or "", this will become 'null'
+    const genresArray = genres ? genres.split(',') : null;
+
     // Create a New Job
+    // Add the 'excluded_genres' array to your INSERT
     console.log(`Cache MISS (Job): No job found for ${city} on ${date}. Creating new job...`);
     
     const newJob = await sql`
