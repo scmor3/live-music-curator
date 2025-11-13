@@ -379,14 +379,22 @@ async function processJobQueue() {
     // Handle Failure
     console.error(`WORKER: Job ${job ? job.id : 'unknown'} FAILED:`, error.message);
     if (job) {
-      // If a job fails, we mark it as 'failed' and log the error.
-      await sql`
-        UPDATE playlist_jobs 
-        SET 
-          status = 'failed', 
-          error_message = ${error.message}
-        WHERE id = ${job.id};
-      `;
+      // We are already in a failed state.
+      // If we can't log the error to the DB just don't crash.
+      try {
+        await sql`
+          UPDATE playlist_jobs 
+          SET 
+            status = 'failed', 
+            error_message = ${error.message}
+          WHERE id = ${job.id};
+        `;
+        console.log(`WORKER: Successfully logged failure for job ${job.id} to DB.`);
+      } catch (dbError) {
+        console.error(`WORKER: CRITICAL! FAILED TO LOG FAILURE for job ${job.id}. DB connection is down.`);
+        console.error('Original error:', error.message);
+        console.error('DB log error:', dbError.message);
+      }
     }
   }
 }
@@ -396,8 +404,19 @@ async function processJobQueue() {
 /**
  * Health check route.
  */
-app.get('/', (req, res) => {
-  res.json({ message: 'Server is up and running!' });
+app.get('/', async (req, res) => {
+  try {
+    // Keep supabase awake with this ping
+    await sql`SELECT 1;`;
+    
+    // If the query succeeds, the server and DB are healthy.
+    res.json({ message: 'Server and Database are up and running!' });
+
+  } catch (error) {
+    // If this fails, the DB is down.
+    console.error('CRITICAL: Health check ping to database FAILED:', error.message);
+    res.status(503).json({ error: 'Database connection failed.' });
+  }
 });
 
 /**
@@ -488,7 +507,7 @@ app.get('/api/playlists', async (req, res) => {
         search_date,
         latitude,
         longitude,
-        number_of_songs.
+        number_of_songs,
         genre
       ) VALUES (
         ${city},
