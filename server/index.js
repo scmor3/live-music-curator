@@ -206,19 +206,18 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
 
       // Genre Filtering Logic
       if (genreFilter && bestMatch && bestMatch.genres) {
-        // A genre filter exists! Let's check the artist's genres.
-        // We check if *any* of the artist's genres (e.g., "indie rock")
-        // contain our simple filter (e.g., "rock").
-        const hasMatchingGenre = bestMatch.genres.some(
+        // Check if *any* of the artist's genres (e.g., "country rock")
+        // contain our simple filter (e.g., "country").
+        const hasExcludedGenre = bestMatch.genres.some(
           artistGenre => artistGenre.toLowerCase().includes(genreFilter.toLowerCase())
         );
 
-        if (!hasMatchingGenre) {
-          console.log(`  -> SKIPPING: Artist "${bestMatch.name}" genres (${bestMatch.genres.join(', ')}) do not match filter "${genreFilter}".`);
+        if (hasExcludedGenre) {
+          // This artist MATCHES the exclusion filter, so we SKIP them.
+          console.log(`  -> SKIPPING: Artist "${bestMatch.name}" has excluded genre. (${bestMatch.genres.join(', ')})`);
           spotifyArtistId = null; // Set to null to skip track-adding
-        } else {
-          console.log(`  -> Genre Match: Artist "${bestMatch.name}" has matching genre. Proceeding...`);
         }
+        // If 'hasExcludedGenre' is false, we do nothing and proceed.
       }
 
       // If we have a match, add tracks
