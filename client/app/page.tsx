@@ -38,14 +38,27 @@ export default function HomePage() {
   // Helper function to pad numbers (e.g., 9 -> "09")
   const pad = (num: number) => num.toString().padStart(2, '0');
 
-  // Get "today" *in the user's local timezone*
-  const today = new Date();
-  const todayString = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+  // Set the initial min/max dates to null.
+  // This prevents a server-render mismatch.
+  const [todayString, setTodayString] = useState<string | null>(null);
+  const [maxDateString, setMaxDateString] = useState<string | null>(null);
 
-  // Get the max date *in the user's local timezone*
-  const maxDate = new Date();
-  maxDate.setDate(today.getDate() + 30);
-  const maxDateString = `${maxDate.getFullYear()}-${pad(maxDate.getMonth() + 1)}-${pad(maxDate.getDate())}`;
+  // This effect runs *only on the client* after the page loads
+  useEffect(() => {
+    // Get "today" *in the user's local timezone*
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+
+    // Get the max date *in the user's local timezone*
+    const maxDate = new Date();
+    maxDate.setDate(today.getDate() + 30);
+    const maxDateStr = `${maxDate.getFullYear()}-${pad(maxDate.getMonth() + 1)}-${pad(maxDate.getDate())}`;
+
+    // Now, update the state. This will re-render the component
+    // and set the 'min' and 'max' attributes on the date picker.
+    setTodayString(todayStr);
+    setMaxDateString(maxDateStr);
+  }, []); // The empty array [] means "run this once on mount"
   // --- END TIMEZONE-SAFE DATE LOGIC ---
   
     // Autocomplete API Logic (with Debouncing)
@@ -184,6 +197,10 @@ export default function HomePage() {
    * It now just SUBMITS a job, it doesn't wait for completion.
    */
   const handlePlaylistCreation = async () => {
+    if (!todayString || !maxDateString) {
+      setError('Date range not loaded yet. Please wait a moment.');
+      return;
+    }
     // We now check if a city has been *selected*, not just typed
     if (!selectedCity) {
       setError('Please select a valid city from the dropdown.');
@@ -320,9 +337,9 @@ export default function HomePage() {
               id="date-picker"
               value={date} 
               onChange={(e) => setDate(e.target.value)} 
-              min={todayString}
-              max={maxDateString}
-              disabled={isLoading}
+              min={todayString || ''} // Use empty string if state is null
+              max={maxDateString || ''} // Use empty string if state is null
+              disabled={isLoading || !todayString} // Disable if loading OR if dates haven't been set
               className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark"
             />
           </div>
