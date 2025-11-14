@@ -34,13 +34,19 @@ export default function HomePage() {
   const [pollingStatusMessage, setPollingStatusMessage] = useState('');
   
 
-  // Get today's date and format it
+  // --- TIMEZONE-SAFE DATE LOGIC ---
+  // Helper function to pad numbers (e.g., 9 -> "09")
+  const pad = (num: number) => num.toString().padStart(2, '0');
+
+  // Get "today" *in the user's local timezone*
   const today = new Date();
-  const todayString = today.toISOString().split('T')[0];
-  // Get the date 30 days from now
+  const todayString = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+
+  // Get the max date *in the user's local timezone*
   const maxDate = new Date();
   maxDate.setDate(today.getDate() + 30);
-  const maxDateString = maxDate.toISOString().split('T')[0];
+  const maxDateString = `${maxDate.getFullYear()}-${pad(maxDate.getMonth() + 1)}-${pad(maxDate.getDate())}`;
+  // --- END TIMEZONE-SAFE DATE LOGIC ---
   
     // Autocomplete API Logic (with Debouncing)
   useEffect(() => {

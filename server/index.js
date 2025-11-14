@@ -46,12 +46,29 @@ app.use(cors(corsOptions));
 
 let sql;
 
+// This object tells the 'postgres' library how to handle specific data types.
+// We are telling it to treat 'date' (type 1082) as plain text, not a JS Date.
+const typeOptions = {
+  date: 1082,
+  types: {
+    date: {
+      to: 1082,
+      from: [1082],
+      serialize: (val) => val,
+      parse: (val) => val, // Return the raw string 'YYYY-MM-DD'
+    },
+  },
+};
 // Check which environment variables are available
 if (process.env.DATABASE_URL) {
   // --- PRODUCTION ---
   // Render provides the DATABASE_URL. Use it.
   console.log('Connecting to database using DATABASE_URL...');
-  sql = postgres(process.env.DATABASE_URL);
+  // We use postgres.options to merge our connection string with our new type option
+  sql = postgres(process.env.DATABASE_URL, {
+    ...typeOptions,
+    onnotice: () => {},
+  });
 } else {
   // --- LOCAL ---
   // We're local. Use the .env file's separate variables.
@@ -62,7 +79,8 @@ if (process.env.DATABASE_URL) {
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
     password: process.env.DB_PASS,
-    onnotice: () => {}, // quiet postgres console logs
+    onnotice: () => {},
+    ...typeOptions, // <-- Add the new options here
   });
 }
 
@@ -413,13 +431,10 @@ async function processJobQueue() {
     
     const accessToken = await getMasterAccessToken();
 
-    // Convert the 'Date' object back to a YYYY-MM-DD string
-    const dateString = job.search_date.toISOString().split('T')[0];
-
     // Run our curation logic with the job's data
     const { playlistId } = await runCurationLogic(
       job.search_city,
-      dateString,
+      job.search_date,
       job.number_of_songs,
       accessToken,
       job.latitude,
