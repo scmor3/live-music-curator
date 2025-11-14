@@ -2,6 +2,7 @@
 
 // Import 'useState' from React
 import { useState, useEffect } from 'react';
+import { text } from 'stream/consumers';
 
 type CitySuggestion = {
   name: string;
@@ -17,10 +18,12 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState(''); // What the user is typing, e.g., "Aust"
   const [suggestions, setSuggestions] = useState<CitySuggestion[]>([]); // The list of results, e.g., ["Austin, TX", "Austin, MN"]
   const [selectedCity, setSelectedCity] = useState<CitySuggestion | null>(null); // The final city the user clicked on
-
+  const [excludedGenres, setExcludedGenres] = useState<string[]>([]); // Holds the selected genres
+  const [showGenres, setShowGenres] = useState(false);
+  
   const [date, setDate] = useState('');
   
-  // We need new state variables to track the API call
+  // We need state variables to track the API call
   const [playlistId, setPlaylistId] = useState(''); // To store the final result
   const [isLoading, setIsLoading] = useState(false); // To show a loading spinner
   const [error, setError] = useState(''); // To show any error messages
@@ -29,6 +32,7 @@ export default function HomePage() {
   const [jobId, setJobId] = useState('');
   // This will hold user-friendly text like "Your job is pending..." or "Building...".
   const [pollingStatusMessage, setPollingStatusMessage] = useState('');
+  
 
   // Get today's date and format it
   const today = new Date();
@@ -50,13 +54,12 @@ export default function HomePage() {
     // It waits 300ms after the user stops typing before calling the API.
     const timer = setTimeout(async () => {
       try {
-        // Call our new backend endpoint
         const response = await fetch(`${API_URL}/api/search-cities?q=${encodeURIComponent(searchQuery)}`);
         if (!response.ok) {
           throw new Error('Failed to fetch city suggestions');
         }
         const data = await response.json();
-        setSuggestions(data); // Update the state with the new suggestions
+        setSuggestions(data);
       } catch (err) {
         console.error('Error fetching city suggestions:', err);
         setSuggestions([]); // Clear suggestions on error
@@ -151,6 +154,20 @@ export default function HomePage() {
     setSuggestions([]);            // Close the dropdown
   };
   /**
+   * Runs when a user checks or unchecks a genre box.
+   */
+  const handleGenreChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { value, checked } = e.target;
+    
+    if (checked) {
+      // It was checked: add it to the array
+      setExcludedGenres(prev => [...prev, value]);
+    } else {
+      // It was unchecked: filter it out of the array
+      setExcludedGenres(prev => prev.filter(genre => genre !== value));
+    }
+  };
+  /**
    * This function runs when the user clicks "Create"
    * It now just SUBMITS a job, it doesn't wait for completion.
    */
@@ -177,7 +194,7 @@ export default function HomePage() {
     setIsLoading(true); // Show loading spinner
     setError(''); // Clear any old errors
     setPlaylistId(''); // Clear any old results
-    setPollingStatusMessage('Submitting your request...'); // New status message
+    setPollingStatusMessage('Submitting your request...');
 
     try {
       // Build the URL for our backend API
@@ -187,6 +204,13 @@ export default function HomePage() {
         lat: selectedCity.latitude.toString(), // Convert number to string for URL
         lon: selectedCity.longitude.toString()  // Convert number to string for URL
       });
+
+      // If the user has selected any genres...
+      if (excludedGenres.length > 0) {
+        // ...join them into a single, comma-separated string
+        const genreString = excludedGenres.join(',');
+        queryParams.append('genres', genreString); // 'genres' (plural)
+      }
 
       const response = await fetch(`${API_URL}/api/playlists?${queryParams}`);
 
@@ -205,7 +229,6 @@ export default function HomePage() {
         // SUCCESS! We got a job ID
         setJobId(data.jobId); // This is the key. We save the job ID.
         setPollingStatusMessage('Your job is in the queue...');
-        // The new useEffect hook (coming next) will now take over.
       } else {
         throw new Error('Server did not return a valid job ID.');
       }
@@ -239,7 +262,7 @@ export default function HomePage() {
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-4 mt-4">
 
-          {/* --- NEW: City Autocomplete Wrapper --- */}
+          {/* --- City Autocomplete Wrapper --- */}
           {/* 'relative' is crucial for positioning the dropdown */}
           <div className="w-full max-w-xs relative">
             <label htmlFor="city-search" className="block text-sm font-medium text-black mb-1">
@@ -255,7 +278,7 @@ export default function HomePage() {
               // 'w-full' makes it fill the 'max-w-xs' container
               className="p-2 border border-zinc-600 rounded-lg text-stone-100 bg-zinc-700 w-full"
             />
-            {/* --- NEW: Suggestions Dropdown --- */}
+            {/* --- Suggestions Dropdown --- */}
             {/* This list only renders if there are suggestions */}
             {suggestions.length > 0 && (
               <ul className="absolute z-10 w-full bg-zinc-700 border border-zinc-600 rounded-lg mt-1 max-h-60 overflow-y-auto">
@@ -291,6 +314,65 @@ export default function HomePage() {
               className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark"
             />
           </div>
+          {/* --- END: Date Picker --- */}
+
+          {/* --- COLLAPSIBLE GENRE FILTER --- */}
+          <div className="w-full max-w-xs text-center">
+            
+            {/* The Toggle Button */}
+            <button 
+              onClick={() => setShowGenres(!showGenres)} 
+              className="text-sm text-zinc-600 hover:text-black underline underline-offset-2 decoration-zinc-400 hover:decoration-black transition-all cursor-pointer"
+              type="button"
+            >
+              {showGenres ? 'Hide Filters' : 'Exclude Genres (Optional)'}
+            </button>
+
+            {/* The Content (Checkboxes) */}
+            {showGenres && (
+              <div className="mt-3 text-left"> 
+                {/* Added text-left here so the checkboxes align nicely */}
+                <div className="p-3 border border-zinc-600 rounded-lg bg-zinc-700 grid grid-cols-2 gap-2">
+                  {[
+                    { text: 'Country', value: 'country' },
+                    { text: 'Rock', value: 'rock' },
+                    { text: 'Pop', value: 'pop' },
+                    { text: 'Hip Hop / Rap', value: 'hip hop' },
+                    { text: 'Electronic', value: 'electronic' },
+                    { text: 'Jazz', value: 'jazz' },
+                    { text: 'R&B / Soul', value: 'r&b' },
+                    { text: 'Folk', value: 'folk' },
+                    { text: 'Latin', value: 'latin' },
+                    { text: 'Acoustic', value: 'acoustic' },
+                    { text: 'Metal', value: 'metal' },
+                    { text: 'Punk', value: 'punk' },
+                    { text: 'Classical', value: 'classical' },
+                    { text: 'Reggae', value: 'reggae' },
+                    { text: 'Blues', value: 'blues' },
+                    { text: 'Indie', value: 'indie' },
+                    { text: 'Gospel', value: 'gospel' },
+                    { text: 'Comedy', value: 'comedy' }
+                  ].map((genre) => (
+                    <label key={genre.value} className="flex items-center space-x-2 text-stone-100 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        value={genre.value}
+                        checked={excludedGenres.includes(genre.value)}
+                        onChange={handleGenreChange}
+                        disabled={isLoading}
+                        className="rounded text-amber-600 focus:ring-amber-500"
+                      />
+                      <span className="text-sm">{genre.text}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-center text-zinc-600 mt-1 px-1">
+                  Note: We'll try to filter out your excluded genres, but many artists don't have genre tags on Spotify.
+                </p>
+              </div>
+            )}
+          </div>
+          {/* --- END: COLLAPSIBLE GENRE FILTER --- */}
 
           {/* --- Submit Button --- */}
           {/* This is now a direct child of the 'gap-4' flex container */}

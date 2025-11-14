@@ -109,7 +109,7 @@ async function getMasterAccessToken() {
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude) {
+async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres) {
   // Get the raw artist list by calling our scraper
   const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
   // Check if we found any artists.
@@ -117,9 +117,17 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
     console.log(`No artists found for "${city}" on ${date}.`);
     return { playlistId: null };
   }
+
+  let nameSuffix = ''; // Start with an empty suffix
+  if (excludedGenres && excludedGenres.length > 0) {
+    // Create a "pretty" version of the genres, e.g., "Country, Jazz"
+    const prettyGenres = excludedGenres.map(g => g.charAt(0).toUpperCase() + g.slice(1)).join(', ');
+    nameSuffix = ` (Excl: ${prettyGenres})`;
+  }
+
   // Create the new empty playlist on Spotify
   const playlistData = {
-    name: `${city} ${date} live music`,
+    name: `${city} ${date} live music${nameSuffix}`,
     description: `Artists performing in ${city} on ${date}, curated by Live Music Curator.`,
     public: true
   };
@@ -141,6 +149,39 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
   console.log(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
+
+  // --- SYNONYM MAP ---
+  const genreSynonymMap = {
+    'hip hop': ['rap'],
+    'r&b': ['soul'],
+    'electronic': [
+      'edm', 'techno', 'house', 'dubstep', 'trance', 
+      'psytrance', 'downtempo', 'bass music', 'riddim'
+    ],
+    'punk': ['hardcore', 'post-punk', 'screamo', 'emo'],
+    'latin': [
+      'reggaeton', 'cumbia', 'banda', 'sertanejo', 
+      'dembow', 'grupera', 'duranguense', 'piseiro'
+    ],
+    'blues': ['boogie-woogie'],
+    'folk': ['americana'],
+    'classical': ['orchestral']
+  };
+
+  // Create a new, expanded list of genres to filter
+  let expandedExcludedGenres = [...(excludedGenres || [])];
+
+  if (excludedGenres) {
+    excludedGenres.forEach(genre => {
+      if (genreSynonymMap[genre]) {
+        expandedExcludedGenres = [
+          ...expandedExcludedGenres, 
+          ...genreSynonymMap[genre]
+        ];
+      }
+    });
+  }
+// --- END: SYNONYM MAP ---
 
   // Initialize array to hold artist results
   const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
@@ -178,7 +219,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       if (bestMatch) {
         // Found Exact Match
         spotifyArtistId = bestMatch.id;
-        console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId})`);
+        console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId}) & genres: ${bestMatch.genres.join(', ')}`);
       } else {
         // No Exact Match, Check Similarity
         let closestMatch = null;
@@ -197,12 +238,28 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           // Found a close enough match
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
-          console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance})`);
+          console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
         } else {
           // No good match found
           console.log(`No close match for "${artistName}". Skipping.`);
         }
       }
+
+      // Genre Filtering Logic
+      if (excludedGenres && excludedGenres.length > 0 && bestMatch && bestMatch.genres && bestMatch.genres.length > 0) {
+        // Check if *any* of the artist's genres match *any* of the excluded genres
+        const hasExcludedGenre = excludedGenres.some(excludedGenre => 
+          bestMatch.genres.some(artistGenre => 
+            artistGenre.toLowerCase().includes(excludedGenre.toLowerCase())
+          )
+        );
+
+        if (hasExcludedGenre) {
+          // This artist MATCHES the exclusion list, so we SKIP them.
+          console.log(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
+          spotifyArtistId = null; // Set to null to skip track-adding
+        }
+    }
 
       // If we have a match, add tracks
       if (spotifyArtistId) {
@@ -294,6 +351,27 @@ async function processJobQueue() {
   let job; // declared outside the 'try' so we can use it in 'catch'
 
   try {
+    // find any job that's been "building" for too long
+    // (e.g., if the server crashed) and mark it as 'failed'.
+    try {
+      const zombieJobs = await sql`
+        UPDATE playlist_jobs 
+        SET 
+          status = 'failed', 
+          error_message = 'Build timed out and was reset'
+        WHERE status = 'building'
+        AND updated_at < NOW() - INTERVAL '30 minutes'
+        RETURNING id;
+      `;
+
+      if (zombieJobs.length > 0) {
+        console.warn(`WORKER: Found and reset ${zombieJobs.length} zombie job(s).`);
+      }
+    } catch (reaperError) {
+      // If this fails, the DB is probably down. Log it and stop.
+      console.error('WORKER: CRITICAL! Zombie reaper FAILED:', reaperError.message);
+      return; // Stop the worker run
+    }
     // Find and "Lock" a Job
     // Find a pending job and update its status
     // This prevents two workers from accidentally grabbing the same job.
@@ -345,7 +423,8 @@ async function processJobQueue() {
       job.number_of_songs,
       accessToken,
       job.latitude,
-      job.longitude
+      job.longitude,
+      job.excluded_genres
     );
 
     // Handle Success
@@ -361,14 +440,22 @@ async function processJobQueue() {
     // Handle Failure
     console.error(`WORKER: Job ${job ? job.id : 'unknown'} FAILED:`, error.message);
     if (job) {
-      // If a job fails, we mark it as 'failed' and log the error.
-      await sql`
-        UPDATE playlist_jobs 
-        SET 
-          status = 'failed', 
-          error_message = ${error.message}
-        WHERE id = ${job.id};
-      `;
+      // We are already in a failed state.
+      // If we can't log the error to the DB just don't crash.
+      try {
+        await sql`
+          UPDATE playlist_jobs 
+          SET 
+            status = 'failed', 
+            error_message = ${error.message}
+          WHERE id = ${job.id};
+        `;
+        console.log(`WORKER: Successfully logged failure for job ${job.id} to DB.`);
+      } catch (dbError) {
+        console.error(`WORKER: CRITICAL! FAILED TO LOG FAILURE for job ${job.id}. DB connection is down.`);
+        console.error('Original error:', error.message);
+        console.error('DB log error:', dbError.message);
+      }
     }
   }
 }
@@ -378,8 +465,19 @@ async function processJobQueue() {
 /**
  * Health check route.
  */
-app.get('/', (req, res) => {
-  res.json({ message: 'Server is up and running!' });
+app.get('/', async (req, res) => {
+  try {
+    // Keep supabase awake with this ping
+    await sql`SELECT 1;`;
+    
+    // If the query succeeds, the server and DB are healthy.
+    res.json({ message: 'Server and Database are up and running!' });
+
+  } catch (error) {
+    // If this fails, the DB is down.
+    console.error('CRITICAL: Health check ping to database FAILED:', error.message);
+    res.status(503).json({ error: 'Database connection failed.' });
+  }
 });
 
 /**
@@ -428,7 +526,7 @@ app.get('/api/search-cities', async (req, res) => {
  */
 app.get('/api/playlists', async (req, res) => {
   // Validate Input
-  const { city, date, lat, lon } = req.query;
+  const { city, date, lat, lon, genres } = req.query;
   const number_of_songs = 2;
 
   if (!city || !date || !lat || !lon) {
@@ -438,6 +536,10 @@ app.get('/api/playlists', async (req, res) => {
   // Convert lat/lon to numbers for safety
   const latitude = parseFloat(lat);
   const longitude = parseFloat(lon);
+
+  // Convert the comma-separated string of back into an array for the DB
+  // If 'genres' is undefined or "", this will become 'null'
+  const genresArray = genres ? genres.split(',') : null;
 
   // Check for an Existing Job
   // Let's not create duplicate jobs. If a user spam-clicks,
@@ -449,7 +551,8 @@ app.get('/api/playlists', async (req, res) => {
       WHERE 
         search_city = ${city} AND 
         search_date = ${date} AND
-        number_of_songs = ${number_of_songs}
+        number_of_songs = ${number_of_songs} AND
+        excluded_genres IS NOT DISTINCT FROM ${genresArray}
       ORDER BY created_at DESC
       LIMIT 1;
     `;
@@ -462,7 +565,8 @@ app.get('/api/playlists', async (req, res) => {
     }
 
     // Create a New Job
-    console.log(`Cache MISS (Job): No job found for ${city} on ${date}. Creating new job...`);
+    // Add the 'excluded_genres' array to your INSERT
+    console.log(`Cache MISS (Job): No job found for ${city} on ${date} excluding: ${genres}. Creating new job...`);
     
     const newJob = await sql`
       INSERT INTO playlist_jobs (
@@ -470,13 +574,15 @@ app.get('/api/playlists', async (req, res) => {
         search_date,
         latitude,
         longitude,
-        number_of_songs
+        number_of_songs,
+        excluded_genres
       ) VALUES (
         ${city},
         ${date},
         ${latitude},
         ${longitude},
-        ${number_of_songs}
+        ${number_of_songs},
+        ${genresArray}
       )
       RETURNING id;
     `;
