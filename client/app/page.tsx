@@ -197,6 +197,10 @@ export default function HomePage() {
    * It now just SUBMITS a job, it doesn't wait for completion.
    */
   const handlePlaylistCreation = async () => {
+    if (!todayString || !maxDateString) {
+      setError('Date range not loaded yet. Please wait a moment.');
+      return;
+    }
     // We now check if a city has been *selected*, not just typed
     if (!selectedCity) {
       setError('Please select a valid city from the dropdown.');
