@@ -44,6 +44,12 @@ export default function HomePage() {
   
     // Autocomplete API Logic (with Debouncing)
   useEffect(() => {
+    // If a city is already selected AND the search query matches its name,
+    // the user is "done". Don't fetch anything. Just ensure suggestions are closed.
+    if (selectedCity && searchQuery === selectedCity.name) {
+      setSuggestions([]);
+      return;
+    }
     // Clear suggestions if the search query is empty
     if (searchQuery.trim() === '') {
       setSuggestions([]);
