@@ -479,19 +479,28 @@ async function processJobQueue() {
 
 /**
  * Health check route.
+ * Wake up supabase and confirm DB connectivity.
  */
 app.get('/', async (req, res) => {
-  try {
-    // Keep supabase awake with this ping
-    await sql`SELECT 1;`;
-    
-    // If the query succeeds, the server and DB are healthy.
-    res.json({ message: 'Server and Database are up and running!' });
+  const MAX_RETRIES = 4;
+  const RETRY_DELAY = 15000; // 15 seconds
 
-  } catch (error) {
-    // If this fails, the DB is down.
-    console.error('CRITICAL: Health check ping to database FAILED:', error.message);
-    res.status(503).json({ error: 'Database connection failed.' });
+  for (let i = 1; i <= MAX_RETRIES; i++) {
+    try {
+      console.log(`DB Ping: Attempt ${i}/${MAX_RETRIES}...`);
+      await sql`SELECT 1;`;
+      return res.json({ message: 'Server and Database are up and running!' });
+    
+    } catch (error) {
+      console.warn(`DB Ping: Attempt ${i} failed. DB is still waking up...`);
+      if (i === MAX_RETRIES) {
+        console.error('CRITICAL: Health check ping to database FAILED after all retries.');
+        return res.status(503).json({ error: 'Database connection failed.' });
+      }
+      
+      // Wait 15 seconds before the next loop iteration
+      await sleep(RETRY_DELAY);
+    }
   }
 });
 
