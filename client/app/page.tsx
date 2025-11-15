@@ -278,7 +278,7 @@ export default function HomePage() {
 
   return (
     // --- Page layout: dark background, content centered ---
-    <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-pastel-yellow">
+    <main className="flex min-h-screen flex-col items-center p-8 bg-pastel-yellow">
       
       {/* --- Centered "card" with a color flush with background --- */}
       <div className="p-8 w-full max-w-lg text-center">
