@@ -546,6 +546,9 @@ app.get('/api/search-cities', async (req, res) => {
 app.get('/api/city-from-coords', async (req, res) => {
   const { lat, lon } = req.query;
   
+  // for debugging
+  console.log(`[GEO-API]: Received request for lat=${lat}, lon=${lon}`);
+
   if(!lat || !lon) {
     return res.status(400).json({ error: 'Missing required query parameters: lat and lon' });
   }
@@ -572,6 +575,10 @@ app.get('/api/city-from-coords', async (req, res) => {
     
     // send result back to frontend
     const city = results[0];
+
+    // for debugging
+    console.log(`[GEO-API]: PostGIS query found nearest city: "${city.name}"`);
+
     return res.json({
       name: city.name,
       latitude: city.latitude,
