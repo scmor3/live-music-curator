@@ -557,7 +557,6 @@ app.get('/api/city-from-coords', async (req, res) => {
   if (isNaN(latitude) || isNaN(longitude)) {
     return res.status(400).json({ error: 'Invalid latitude or longitude values.' });
   }
-  // --- NEW: Database Query ---
   try {
     // PostGIS query for nearest city
     const results = await sql`
@@ -571,19 +570,13 @@ app.get('/api/city-from-coords', async (req, res) => {
       return res.status(404).json({ error: 'No cities found in the database.' });
     }
     
-    // send name back to frontend
+    // send result back to frontend
     const city = results[0];
     return res.json({
       name: city.name,
       latitude: city.latitude,
       longitude: city.longitude
     });
-
-    // 1. We need to find the closest city from our 'cities' table.
-    // 2. We need to compare our 'geography' column to the user's lat/lon.
-
-    // Question: What SQL keywords do we need to find the *one*
-    // row with the *minimum* distance?
 
   } catch (error) {
     console.error('Error in /api/city-from-coords:', error);

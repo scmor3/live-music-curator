@@ -61,6 +61,44 @@ export default function HomePage() {
   }, []); // The empty array [] means "run this once on mount"
   // --- END TIMEZONE-SAFE DATE LOGIC ---
   
+  // -- USER LOCATION LOGIC ---
+  useEffect(() => {
+    const fetchMyLocation = async () => {
+      
+      try {
+        // Ask the browser for the user's position
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject);
+        });
+
+        const { latitude, longitude } = position.coords;
+
+        // Call backend API route
+        const response = await fetch(`${API_URL}/api/city-from-coords?lat=${latitude}&lon=${longitude}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch city from coordinates');
+        }
+
+        const cityData = await response.json();
+
+        // Check if 'cityData.name' exists
+        if (!cityData.name) {
+          throw new Error('City data is missing name property');
+        }
+
+        setSearchQuery(cityData.name);
+        setSelectedCity(cityData);
+
+      } catch (err) {
+        console.warn('Could not fetch user location:', err);
+      }
+    };
+
+    fetchMyLocation();
+
+  }, []);
+  // -- END USER LOCATION LOGIC ---
+
     // Autocomplete API Logic (with Debouncing)
   useEffect(() => {
     // If a city is already selected AND the search query matches its name,
