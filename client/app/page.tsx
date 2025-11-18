@@ -58,6 +58,9 @@ export default function HomePage() {
     // and set the 'min' and 'max' attributes on the date picker.
     setTodayString(todayStr);
     setMaxDateString(maxDateStr);
+
+    setDate(todayStr); // This sets the default value of the date picker as today
+    
   }, []); // The empty array [] means "run this once on mount"
   // --- END TIMEZONE-SAFE DATE LOGIC ---
   
