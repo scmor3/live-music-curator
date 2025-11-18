@@ -73,9 +73,6 @@ export default function HomePage() {
 
         const { latitude, longitude } = position.coords;
 
-        // for debugging
-        console.log(`Geolocation: Browser returned coords: lat=${latitude}, lon=${longitude}`);
-
         // Call backend API route
         const response = await fetch(`${API_URL}/api/city-from-coords?lat=${latitude}&lon=${longitude}`);
         if (!response.ok) {
@@ -83,9 +80,6 @@ export default function HomePage() {
         }
 
         const cityData = await response.json();
-
-        // for debugging
-        console.log(`Geolocation: Backend API returned city:`, cityData.name);
 
         // Check if 'cityData.name' exists
         if (!cityData.name) {
