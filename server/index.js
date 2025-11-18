@@ -205,6 +205,9 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   const processedArtistIds = new Set(); // deal with for duplicate Spotify IDs
   const retryCounts = {}; // Object to track retries per artist
 
+  // track total number of tracks added to see if we added any at all
+  let tracksAddedCount = 0;
+
   // Loop through each artist and process
   for (let i = 0; i < uniqueArtists.length; i++) {
     const artistName = uniqueArtists[i];
@@ -306,6 +309,8 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           // Use bestMatch.name for the log since artistName can be slightly different
           const logName = bestMatch ? bestMatch.name : artistName;
           console.log(`  -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
+
+          tracksAddedCount += trackUris.length;
         } else {
           console.log(`  -> Found artist, but they have no top tracks. Skipping track add.`);
         }
@@ -356,6 +361,27 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
         console.error(`Error processing artist "${artistName}":`, error.message);
       }
     }
+  }
+
+  // After the loop, check if we actually added any songs.
+  if (tracksAddedCount === 0) {
+    // We created an empty playlist. This is a "failure".
+    console.warn(`WORKER: No tracks added for playlist ${playlistId}. Deleting empty playlist...`);
+    try {
+      // We must "unfollow" (delete) the playlist from the master account.
+      // This is a NEW Spotify API endpoint we are using.
+      await axios.delete(
+        `https://api.spotify.com/v1/playlists/${playlistId}/followers`,
+        { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      );
+      console.warn(`WORKER: Successfully deleted empty playlist ${playlistId}.`);
+    } catch (deleteError) {
+      console.error(`WORKER: CRITICAL! Failed to delete empty playlist ${playlistId}.`, deleteError.message);
+      // Don't stop, just let it return null.
+    }
+    
+    // Return null, which our worker will see as a failure.
+    return { playlistId: null };
   }
   return { playlistId };
 
