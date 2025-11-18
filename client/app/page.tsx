@@ -51,7 +51,7 @@ export default function HomePage() {
 
     // Get the max date *in the user's local timezone*
     const maxDate = new Date();
-    maxDate.setDate(today.getDate() + 30);
+    maxDate.setDate(today.getDate() + 365);
     const maxDateStr = `${maxDate.getFullYear()}-${pad(maxDate.getMonth() + 1)}-${pad(maxDate.getDate())}`;
 
     // Now, update the state. This will re-render the component
@@ -253,7 +253,7 @@ export default function HomePage() {
       return;
     }
     if (date < todayString || date > maxDateString) {
-      setError('Please select a valid date (today or up to 30 days from now).');
+      setError('Please select a valid date (up to 1 year from now).');
       return;
     }
     console.log('Button clicked!');
