@@ -537,10 +537,50 @@ app.get('/api/search-cities', async (req, res) => {
     res.json(suggestions);
 
   } catch (error) {
-  // --- THIS IS THE NEW, BETTER LOG ---
     console.error('Error in /api/search-cities: FULL ERROR OBJECT:');
     console.error(error);
     res.status(500).json({ error: 'Error searching for cities.' });
+  }
+});
+
+app.get('/api/city-from-coords', async (req, res) => {
+  const { lat, lon } = req.query;
+  
+  if(!lat || !lon) {
+    return res.status(400).json({ error: 'Missing required query parameters: lat and lon' });
+  }
+  // convert lat and long to numbers
+  const latitude = parseFloat(lat);
+  const longitude = parseFloat(lon);
+
+  // check if conversion was successful
+  if (isNaN(latitude) || isNaN(longitude)) {
+    return res.status(400).json({ error: 'Invalid latitude or longitude values.' });
+  }
+  try {
+    // PostGIS query for nearest city
+    const results = await sql`
+      SELECT name, latitude, longitude
+      FROM cities
+      ORDER BY geography <-> ST_SetSRID(ST_MakePoint(${longitude}, ${latitude}), 4326)
+      LIMIT 1;
+    `;
+
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'No cities found in the database.' });
+    }
+    
+    // send result back to frontend
+    const city = results[0];
+    return res.json({
+      name: city.name,
+      latitude: city.latitude,
+      longitude: city.longitude
+    });
+
+  } catch (error) {
+    console.error('Error in /api/city-from-coords:', error);
+    res.status(500).json({ error: 'Internal server error.' });
   }
 });
 

@@ -1,0 +1,1 @@
+CREATE INDEX idx_cities_geography ON public.cities USING GIST (geography);
