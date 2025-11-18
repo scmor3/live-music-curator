@@ -362,7 +362,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       }
     }
   }
-
+  console.log(`\nCuration complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
     // We created an empty playlist. This is a "failure".
