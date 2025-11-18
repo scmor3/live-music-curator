@@ -1,5 +1,3 @@
-logger.info("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
-
 // --- Imports ---
 const express = require('express');
 const axios = require('axios');
@@ -36,6 +34,8 @@ const logger = {
   }
 };
 // --- End Logger Configuration ---
+
+logger.info("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
 
 // --- App & Middleware Configuration ---
 const app = express();
