@@ -159,11 +159,19 @@ export default function HomePage() {
           setPollingStatusMessage('Building your playlist... this may take a minute.');
           break;
         case 'complete':
-          // --- SUCCESS! ---
+          // --- SUCCESS! Job is done, now check the result ---
           setJobId(''); // Clear the job ID
           setIsLoading(false); // Stop loading
-          setPlaylistId(data.playlistId); // Set the final playlist ID
           setPollingStatusMessage(''); // Clear the status
+
+          if (data.playlistId) {
+            // We got a playlist! Show the success link.
+            setPlaylistId(data.playlistId); 
+          } else {
+            // We got a 'null' playlist, which means no artists were found.
+            // This is a "success" from the worker, but an "error" for the user.
+            setError('Garsh dangit!\nNo artists were found for this city and date.');
+          }
           break;
         case 'failed':
           // --- FAILED! ---
@@ -459,7 +467,7 @@ export default function HomePage() {
         <div className="mt-6">
           
           {error ? (
-            <p className="text-red-500">{error}</p>
+            <p className="text-red-500 whitespace-pre-line">{error}</p>
           ) : null}
           
           {playlistId ? (
