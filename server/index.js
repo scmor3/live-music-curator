@@ -1,4 +1,4 @@
-console.log("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
+logger.info("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
 
 // --- Imports ---
 const express = require('express');
@@ -8,6 +8,34 @@ const levenshtein = require('fast-levenshtein');
 const cors = require('cors');
 const { scrapeBandsintown } = require('./utils/bandsintownScraper');
 require('dotenv').config();
+
+// --- Logger Configuration ---
+// Get the log level from environment variables. Default to 'info' for production.
+const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
+
+const logger = {
+  // Use for spammy, repetitive logs (like "checking for jobs")
+  debug: (message, ...args) => {
+    if (LOG_LEVEL === 'debug') {
+      console.log(`[DEBUG] ${message}`, ...args);
+    }
+  },
+  // Use for important, high-level events (like a job starting)
+  info: (message, ...args) => {
+    if (LOG_LEVEL === 'debug' || LOG_LEVEL === 'info') {
+      console.log(`[INFO] ${message}`, ...args);
+    }
+  },
+  // Use for non-critical warnings
+  warn: (message, ...args) => {
+    console.warn(`[WARN] ${message}`, ...args);
+  },
+  // Use for app-breaking errors
+  error: (message, ...args) => {
+    console.error(`[ERROR] ${message}`, ...args);
+  }
+};
+// --- End Logger Configuration ---
 
 // --- App & Middleware Configuration ---
 const app = express();
@@ -27,7 +55,7 @@ const corsOptions = {
   origin: function (origin, callback) {
     
     // Show us the exact origin Vercel is sending.
-    console.log('CORS CHECK: Received origin:', origin);
+    logger.debug('CORS CHECK: Received origin:', origin);
 
     // Check if the incoming request's 'origin' is in our whitelist
     if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
@@ -35,7 +63,7 @@ const corsOptions = {
       callback(null, true);
     } else {
       // If it's not in the whitelist, block it.
-      console.error('CORS BLOCKED:', origin); // Log the blocked origin
+      logger.warn('CORS BLOCKED:', origin); // Log the blocked origin
       
       // Send 'false' to block the request, instead of an Error to avoid crashing the server.
       callback(null, false); 
@@ -63,7 +91,7 @@ const typeOptions = {
 if (process.env.DATABASE_URL) {
   // --- PRODUCTION ---
   // Render provides the DATABASE_URL. Use it.
-  console.log('Connecting to database using DATABASE_URL...');
+  logger.info('Connecting to database using DATABASE_URL...');
   // We use postgres.options to merge our connection string with our new type option
   sql = postgres(process.env.DATABASE_URL, {
     ...typeOptions,
@@ -72,7 +100,7 @@ if (process.env.DATABASE_URL) {
 } else {
   // --- LOCAL ---
   // We're local. Use the .env file's separate variables.
-  console.log('Connecting to database using local .env variables...');
+  logger.info('Connecting to database using local .env variables...');
   sql = postgres({
     host: process.env.DB_HOST,
     port: Number(process.env.DB_PORT),
@@ -119,7 +147,7 @@ async function getMasterAccessToken() {
     // as we can just re-authenticate manually if it ever expires.
     return response.data.access_token;
   } catch (error) {
-    console.error('CRITICAL: Could not refresh master access token!', error.response ? error.response.data : error.message);
+    logger.error('CRITICAL: Could not refresh master access token!', error.response ? error.response.data : error.message);
     throw new Error('Failed to get master access token.');
   }
 }
@@ -132,7 +160,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
   // Check if we found any artists.
   if (!rawArtistList || rawArtistList.length === 0) {
-    console.log(`No artists found for "${city}" on ${date}.`);
+    logger.info(`No artists found for "${city}" on ${date}.`);
     return { playlistId: null };
   }
 
@@ -161,12 +189,12 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
     axiosConfig
   );
   const playlistId = createPlaylistResponse.data.id;
-  console.log(`Successfully created new playlist with ID: ${playlistId}`);
+  logger.info(`Successfully created new playlist with ID: ${playlistId}`);
 
   // De-duplicate the list - normalize to lowercase to catch simple duplicates
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
-  console.log(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
+  logger.info(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
 
   // --- SYNONYM MAP ---
   const genreSynonymMap = {
@@ -212,7 +240,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   for (let i = 0; i < uniqueArtists.length; i++) {
     const artistName = uniqueArtists[i];
 
-    console.log(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
+    logger.info(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -222,7 +250,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
 
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
-        console.log(`  -> No Spotify results for "${artistName}".`);
+        logger.info(`  -> No Spotify results for "${artistName}".`);
         continue;
       }
 
@@ -240,7 +268,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       if (bestMatch) {
         // Found Exact Match
         spotifyArtistId = bestMatch.id;
-        console.log(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId}) & genres: ${bestMatch.genres.join(', ')}`);
+        logger.info(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId}) & genres: ${bestMatch.genres.join(', ')}`);
       } else {
         // No Exact Match, Check Similarity
         let closestMatch = null;
@@ -259,10 +287,10 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           // Found a close enough match
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
-          console.log(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
+          logger.info(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
         } else {
           // No good match found
-          console.log(`No close match for "${artistName}". Skipping.`);
+          logger.warn(`No close match for "${artistName}". Skipping.`);
         }
       }
 
@@ -277,7 +305,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
 
         if (hasExcludedGenre) {
           // This artist MATCHES the exclusion list, so we SKIP them.
-          console.log(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
+          logger.info(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
           spotifyArtistId = null; // Set to null to skip track-adding
         }
     }
@@ -286,7 +314,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       if (spotifyArtistId) {
         // Check if we've already added tracks for this exact Spotify ID
         if (processedArtistIds.has(spotifyArtistId)) {
-          console.log(`Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
+          logger.info(`Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
           continue;
         }
         // If not, this is a new artist. Add them to our Set.
@@ -308,11 +336,11 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           );
           // Use bestMatch.name for the log since artistName can be slightly different
           const logName = bestMatch ? bestMatch.name : artistName;
-          console.log(`  -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
+          logger.info(`  -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
 
           tracksAddedCount += trackUris.length;
         } else {
-          console.log(`  -> Found artist, but they have no top tracks. Skipping track add.`);
+          logger.info(`  -> Found artist, but they have no top tracks. Skipping track add.`);
         }
       }
     } catch (error) {
@@ -344,29 +372,29 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
             waitMs = Number(retryAfterSeconds) * 1000;
             waitReason = `429 rate limit`;
           }
-          
-          console.warn(`Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
+
+          logger.warn(`Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
           await sleep(waitMs);
           
           i--; // Rewind the loop to retry
-          console.log(`Retrying artist "${artistName}"...`);
+          logger.info(`Retrying artist "${artistName}"...`);
 
         } else {
           // --- We're out of retries. Give up on this artist. ---
-          console.error(`Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
+          logger.error(`Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
         }
       } else {
         // It was a different, non-retryable error (like 404, 401)
         // Or a non-axios error. Log it and move on.
-        console.error(`Error processing artist "${artistName}":`, error.message);
+        logger.error(`Error processing artist "${artistName}":`, error.message);
       }
     }
   }
-  console.log(`\nCuration complete. Total tracks added to playlist: ${tracksAddedCount}`);
+  logger.info(`\nCuration complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
     // We created an empty playlist. This is a "failure".
-    console.warn(`WORKER: No tracks added for playlist ${playlistId}. Deleting empty playlist...`);
+    logger.warn(`WORKER: No tracks added for playlist ${playlistId}. Deleting empty playlist...`);
     try {
       // We must "unfollow" (delete) the playlist from the master account.
       // This is a NEW Spotify API endpoint we are using.
@@ -374,9 +402,9 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
         `https://api.spotify.com/v1/playlists/${playlistId}/followers`,
         { headers: { 'Authorization': `Bearer ${accessToken}` } }
       );
-      console.warn(`WORKER: Successfully deleted empty playlist ${playlistId}.`);
+      logger.warn(`WORKER: Successfully deleted empty playlist ${playlistId}.`);
     } catch (deleteError) {
-      console.error(`WORKER: CRITICAL! Failed to delete empty playlist ${playlistId}.`, deleteError.message);
+      logger.error(`WORKER: CRITICAL! Failed to delete empty playlist ${playlistId}.`, deleteError.message);
       // Don't stop, just let it return null.
     }
     
@@ -393,11 +421,13 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
  */
 async function processJobQueue() {
   let job; // declared outside the 'try' so we can use it in 'catch'
+  logger.debug('WORKER (1/7): processJobQueue started.');
 
   try {
     // find any job that's been "building" for too long
     // (e.g., if the server crashed) and mark it as 'failed'.
     try {
+      logger.debug('WORKER (2/7): Checking for zombie jobs...');
       const zombieJobs = await sql`
         UPDATE playlist_jobs 
         SET 
@@ -409,13 +439,16 @@ async function processJobQueue() {
       `;
 
       if (zombieJobs.length > 0) {
-        console.warn(`WORKER: Found and reset ${zombieJobs.length} zombie job(s).`);
+        logger.warn(`WORKER: Found and reset ${zombieJobs.length} zombie job(s).`);
       }
+      logger.debug('WORKER (3/7): Zombie check complete.');
     } catch (reaperError) {
       // If this fails, the DB is probably down. Log it and stop.
-      console.error('WORKER: CRITICAL! Zombie reaper FAILED:', reaperError.message);
+      logger.error('WORKER: CRITICAL! Zombie reaper FAILED:', reaperError.message);
       return; // Stop the worker run
     }
+
+    logger.debug('WORKER (4/7): Looking for a pending job...');
     // Find and "Lock" a Job
     // Find a pending job and update its status
     // This prevents two workers from accidentally grabbing the same job.
@@ -448,12 +481,13 @@ async function processJobQueue() {
     });
 
     if (!job) {
-      console.log('WORKER: No pending jobs found.');
+      logger.debug('WORKER (5/7): No pending jobs found.');
+      logger.debug('WORKER: No pending jobs found.');
       return; // No jobs to do, so just stop here.
     }
 
     // Process the Job
-    console.log(`WORKER: Picked up job ${job.id} for "${job.search_city}" on ${job.search_date}`);
+    logger.info(`WORKER (6/7): Picked up job ${job.id}. Calling runCurationLogic on "${job.search_city}" on ${job.search_date}`);
     
     const accessToken = await getMasterAccessToken();
 
@@ -469,17 +503,25 @@ async function processJobQueue() {
     );
 
     // Handle Success
-    console.log(`WORKER: Job ${job.id} complete. Playlist ID: ${playlistId}`);
-    await sql`
-      UPDATE playlist_jobs 
-      SET 
-        status = 'complete', 
-        playlist_id = ${playlistId}
-      WHERE id = ${job.id};
-    `;
+    logger.info(`WORKER (7/7): Curation logic complete for job ${job.id}. PlaylistID: ${playlistId}`);
+      if (playlistId) {
+      await sql`
+        UPDATE playlist_jobs 
+        SET status = 'complete', playlist_id = ${playlistId}
+        WHERE id = ${job.id};
+      `;
+    } else {
+      logger.warn(`WORKER: Job ${job.id} found no artists. Marking as 'failed'.`);
+      await sql`
+        UPDATE playlist_jobs 
+        SET status = 'failed', error_message = 'No artists were found for this city and date.'
+        WHERE id = ${job.id};
+      `;
+    }
+
   } catch (error) {
     // Handle Failure
-    console.error(`WORKER: Job ${job ? job.id : 'unknown'} FAILED:`, error.message);
+    logger.error(`WORKER: CRITICAL FAILURE for job ${job ? job.id : 'unknown'}. Full Error:`, error);
     if (job) {
       // We are already in a failed state.
       // If we can't log the error to the DB just don't crash.
@@ -491,11 +533,11 @@ async function processJobQueue() {
             error_message = ${error.message}
           WHERE id = ${job.id};
         `;
-        console.log(`WORKER: Successfully logged failure for job ${job.id} to DB.`);
+        logger.info(`WORKER: Successfully logged failure for job ${job.id} to DB.`);
       } catch (dbError) {
-        console.error(`WORKER: CRITICAL! FAILED TO LOG FAILURE for job ${job.id}. DB connection is down.`);
-        console.error('Original error:', error.message);
-        console.error('DB log error:', dbError.message);
+        logger.error(`WORKER: CRITICAL! FAILED TO LOG FAILURE for job ${job.id}. DB connection is down.`);
+        logger.error('Original error:', error.message);
+        logger.error('DB log error:', dbError.message);
       }
     }
   }
@@ -513,14 +555,14 @@ app.get('/', async (req, res) => {
 
   for (let i = 1; i <= MAX_RETRIES; i++) {
     try {
-      console.log(`DB Ping: Attempt ${i}/${MAX_RETRIES}...`);
+      logger.info(`DB Ping: Attempt ${i}/${MAX_RETRIES}...`);
       await sql`SELECT 1;`;
       return res.json({ message: 'Server and Database are up and running!' });
     
     } catch (error) {
-      console.warn(`DB Ping: Attempt ${i} failed. DB is still waking up...`);
+      logger.warn(`DB Ping: Attempt ${i} failed. DB is still waking up...`);
       if (i === MAX_RETRIES) {
-        console.error('CRITICAL: Health check ping to database FAILED after all retries.');
+        logger.error('CRITICAL: Health check ping to database FAILED after all retries.');
         return res.status(503).json({ error: 'Database connection failed.' });
       }
       
@@ -563,8 +605,8 @@ app.get('/api/search-cities', async (req, res) => {
     res.json(suggestions);
 
   } catch (error) {
-    console.error('Error in /api/search-cities: FULL ERROR OBJECT:');
-    console.error(error);
+    logger.error('Error in /api/search-cities: FULL ERROR OBJECT:');
+    logger.error(error);
     res.status(500).json({ error: 'Error searching for cities.' });
   }
 });
@@ -605,7 +647,7 @@ app.get('/api/city-from-coords', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error in /api/city-from-coords:', error);
+    logger.error('Error in /api/city-from-coords:', error);
     res.status(500).json({ error: 'Internal server error.' });
   }
 });
@@ -649,14 +691,14 @@ app.get('/api/playlists', async (req, res) => {
 
     if (existingJob.length > 0) {
       const job = existingJob[0];
-      console.log(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}`);
+      logger.info(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}`);
       // Return the ID of the job we found.
       return res.json({ jobId: job.id });
     }
 
     // Create a New Job
     // Add the 'excluded_genres' array to your INSERT
-    console.log(`Cache MISS (Job): No job found for ${city} on ${date} excluding: ${genres}. Creating new job...`);
+    logger.info(`Cache MISS (Job): No job found for ${city} on ${date} excluding: ${genres}. Creating new job...`);
     
     const newJob = await sql`
       INSERT INTO playlist_jobs (
@@ -678,13 +720,13 @@ app.get('/api/playlists', async (req, res) => {
     `;
 
     const jobId = newJob[0].id;
-    console.log(`Successfully created new job with ID: ${jobId}`);
+    logger.info(`Successfully created new job with ID: ${jobId}`);
 
     // Send the job ID back to the user immediately
     return res.status(202).json({ jobId: jobId }); // 202 means "Accepted"
 
   } catch (error) {
-    console.error('Error in /api/playlists (job creation):', error);
+    logger.error('Error in /api/playlists (job creation):', error);
     return res.status(500).json({ error: 'Error creating new playlist job.' });
   }
 });
@@ -722,7 +764,7 @@ app.get('/api/playlists/status', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error in /api/playlists/status:', error);
+    logger.error('Error in /api/playlists/status:', error);
     return res.status(500).json({ error: 'Error fetching job status.' });
   }
 });
@@ -732,7 +774,7 @@ app.get('/api/playlists/status', async (req, res) => {
  * Starts the queue processing when the server boots.
  */
 function startWorker() {
-  console.log('Worker loop starting... Will check for jobs every 10 seconds.');
+  logger.info('Worker loop starting... Will check for jobs every 10 seconds.');
   
   // This lock prevents our worker from "overlapping"
   // if a single job takes longer than 10s to run.
@@ -740,16 +782,16 @@ function startWorker() {
 
   const runWorker = async () => {
     if (isWorkerRunning) {
-      console.log('Worker is already running. Skipping this interval.');
+      logger.debug('Worker is already running. Skipping this interval.');
       return;
     }
     
     isWorkerRunning = true;
-    console.log('Worker checking for jobs...');
+    logger.debug('Worker checking for jobs...');
     try {
       await processJobQueue();
     } catch (err) {
-      console.error('Unhandled critical error in worker loop:', err);
+      logger.error('Unhandled critical error in worker loop:', err);
     } finally {
       isWorkerRunning = false;
     }
@@ -762,5 +804,5 @@ startWorker();
 
 // Start the Server
 app.listen(port, '0.0.0.0', () => {
-  console.log(`Server listening on port ${port}. Access at http://localhost:${port}`);
+  logger.info(`Server listening on port ${port}. Access at http://localhost:${port}`);
 });
