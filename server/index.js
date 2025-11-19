@@ -638,7 +638,7 @@ app.get('/api/search-cities', async (req, res) => {
     });
 
     const debugSuggestions = suggestions.map(s => `${s.name} (Pop: ${s.population ? s.population.toLocaleString() : 'NULL'})`);
-    logger.info(`Search Cities: top ${suggestions.length} suggestions for query "${q}":\n${debugSuggestions.join('\n')}`);
+    logger.debug(`Search Cities: top ${suggestions.length} suggestions for query "${q}":\n${debugSuggestions.join('\n')}`);
 
     res.json(suggestions);
 
