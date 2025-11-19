@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "migrate": "node migrate.js",
-    "seed": "node utils/seedDatabase.js"
+    "seed": "node utils/seedDatabase.js",
+    "dedupe": "node utils/cleanSimpleMap.js",
+    "populate:city:populations": "node utils/populateCityPopulations.js"
   },
   "keywords": [],
   "author": "",
@@ -14,7 +16,9 @@
   "dependencies": {
     "axios": "^1.13.1",
     "cors": "^2.8.5",
+    "csv-parse": "^6.1.0",
     "csv-parser": "^3.2.0",
+    "csv-stringify": "^6.6.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "fast-levenshtein": "^3.0.0",

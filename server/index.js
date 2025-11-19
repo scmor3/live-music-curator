@@ -588,19 +588,57 @@ app.get('/api/search-cities', async (req, res) => {
     // We use similarity() to find rows that are "like" the query.
     // We select the name and the similarity score itself, ordered by highest.
     const results = await sql`
-      SELECT name, latitude, longitude, similarity(name, ${q}) as sml
+      SELECT
+        name,
+        latitude,
+        longitude,
+        population,
+        similarity(name, ${q}) AS sml
       FROM cities
-      WHERE similarity(name, ${q}) > 0.1 -- Set a threshold (0.1 is pretty low/fuzzy)
-      ORDER BY sml DESC -- Order by the best match first
-      LIMIT 10; -- Only return the top 10 matches
+      WHERE similarity(name, ${q}) > 0.1
+      ORDER BY
+        (name ILIKE ${q + '%'}) DESC,
+        sml DESC,
+        population::bigint DESC NULLS LAST
+      LIMIT 10;
     `;
     
     // Format and return the results
     const suggestions = results.map(r => ({
       name: r.name,
       latitude: r.latitude,
-      longitude: r.longitude
+      longitude: r.longitude,
+      population: r.population
     }));
+
+    // Re-sort results *by population only*
+    const containsQuery = (name, q) =>
+      name.toLowerCase().includes(q.toLowerCase());
+
+    const startsWithQuery = (name, q) =>
+      name.toLowerCase().startsWith(q.toLowerCase());
+
+    suggestions.sort((a, b) => {
+      const aContains = containsQuery(a.name, q);
+      const bContains = containsQuery(b.name, q);
+
+      // 1. Containing matches first
+      if (aContains && !bContains) return -1;
+      if (!aContains && bContains) return 1;
+
+      // 2. Then prefix matches
+      const aPrefix = startsWithQuery(a.name, q);
+      const bPrefix = startsWithQuery(b.name, q);
+
+      if (aPrefix && !bPrefix) return -1;
+      if (!aPrefix && bPrefix) return 1;
+
+      // 3. Otherwise (same category): compare population
+      return (b.population || 0) - (a.population || 0);
+    });
+
+    const debugSuggestions = suggestions.map(s => `${s.name} (Pop: ${s.population ? s.population.toLocaleString() : 'NULL'})`);
+    logger.info(`Search Cities: top ${suggestions.length} suggestions for query "${q}":\n${debugSuggestions.join('\n')}`);
 
     res.json(suggestions);
 
