@@ -25,6 +25,8 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
   while (page) {
     const url = `https://www.bandsintown.com/choose-dates/fetch-next/upcomingEvents?date=${formattedDate}&page=${page}&longitude=${longitude}&latitude=${latitude}&genre_query=all-genres`;
     
+    console.log(`Constructed URL: ${url}`); // Debugging line to verify URL construction
+
     try {
       console.log(`Scraping page ${page} for ${dateStr} at ${latitude},${longitude}...`);
       const response = await axios.get(url, { headers });
@@ -51,9 +53,25 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
       await sleep(500); // Be polite and wait 500ms before the next request
 
     } catch (error) {
-      console.error(`Error scraping page ${page}:`, error.message);
-      break; 
-    }
+      // --- CRITICAL FIX: Detailed Error Logging for 403/429 ---
+      const status = error.response ? error.response.status : null;
+      const responseData = error.response ? error.response.data : 'N/A';
+      const responseHeaders = error.response ? error.response.headers : 'N/A';
+
+      if (status === 403 || status === 429) {
+        console.error(`\n🛑 CRITICAL 4xx BLOCK (Page ${page}): Scraping failed. Likely IP Block or Rate Limit.`);
+        console.error(`   Status: ${status}`);
+        console.error(`   URL: ${url}`);
+        console.error(`   Headers (look for Retry-After):`, responseHeaders);
+        console.error(`   Response Data (if any):`, responseData);
+        // On a permanent block, we must stop and return what we have.
+        return allArtistNames;
+      }
+      
+      console.error(`Error scraping page ${page}: ${error.message}`);
+      // Continue normal error handling if it's not a block
+      return allArtistNames;
+    }  
   }
 
   console.log(`Scraping complete. Found ${allArtistNames.length} total artist entries.`);
