@@ -141,3 +141,5 @@ vite.config.ts.timestamp-*
 # Ignore large seed data and debug files
 server/worldcities.csv
 server/seed_output_debug.json
+server/utils/cleanSimpleMap.js
+server/utils/worldcities_clean.csv
