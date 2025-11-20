@@ -1,5 +1,12 @@
 const axios = require('axios');
+const https = require('https');
 
+const PROXY_URL = process.env.PROXY_URL;
+const PROXY_PORT = process.env.PROXY_PORT;
+const PROXY_USER = process.env.PROXY_USER;
+const PROXY_PASS = process.env.PROXY_PASS;
+
+console.log(`[PROXY CONFIG] URL: ${PROXY_URL}, PORT: ${PROXY_PORT}, USER: ${PROXY_USER ? 'SET' : 'NOT SET'}`);
 // A simple helper function to pause execution
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
@@ -22,6 +29,36 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
   };
+
+  // --- AXIOS PROXY CONFIGURATION ---
+  let axiosConfig = { headers };
+
+  console.log(`[PROXY DIAGNOSTIC] URL: ${PROXY_URL ? PROXY_URL.substring(0, 10) + '...' : 'MISSING'}, Port: ${PROXY_PORT || 'MISSING'}`);
+
+  if (PROXY_URL && PROXY_PORT) {
+    console.log('[PROXY] Using configured proxy for request.');
+    // Disable SSL certificate verification (rejectUnauthorized)
+    // This solves the 'Hostname/IP does not match certificate's altnames' error.
+    const httpsAgent = new https.Agent({
+      rejectUnauthorized: false,
+    });
+    
+    axiosConfig.proxy = {
+      host: PROXY_URL,
+      port: parseInt(PROXY_PORT),
+      auth: (PROXY_USER && PROXY_PASS) ? {
+        username: PROXY_USER,
+        password: PROXY_PASS
+      } : undefined
+    };
+    // Attach the agent to the axios config for HTTPS requests
+    axiosConfig.httpsAgent = httpsAgent;
+
+  } else {
+      console.error('[PROXY] ERROR: PROXY_URL is NOT set in process.env. Skipping proxy.');
+  }
+  // --- END AXIOS PROXY CONFIGURATION ---
+
   while (page) {
     const url = `https://www.bandsintown.com/choose-dates/fetch-next/upcomingEvents?date=${formattedDate}&page=${page}&longitude=${longitude}&latitude=${latitude}&genre_query=all-genres`;
     
@@ -29,7 +66,7 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
 
     try {
       console.log(`Scraping page ${page} for ${dateStr} at ${latitude},${longitude}...`);
-      const response = await axios.get(url, { headers });
+      const response = await axios.get(url, axiosConfig);
 
       const events = response.data.events;
 
@@ -55,7 +92,6 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
     } catch (error) {
       // --- CRITICAL FIX: Detailed Error Logging for 403/429 ---
       const status = error.response ? error.response.status : null;
-      const responseData = error.response ? error.response.data : 'N/A';
       const responseHeaders = error.response ? error.response.headers : 'N/A';
 
       if (status === 403 || status === 429) {
