@@ -69,6 +69,18 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
     // Launch the browser with the options defined above
     browser = await chromium.launch(launchOptions);
 
+    // --- ZOMBIE CLEANUP (Start) --- 
+    // This catches Ctrl+C and closes the browser so it doesn't stay running in the background.
+    signalHandler = async () => {
+      if (browser) {
+        console.log('\n[SIGINT] Force closing browser to prevent zombie process...');
+        await browser.close();
+        process.exit();
+      }
+    };
+    process.on('SIGINT', signalHandler);
+    // --- ZOMBIE CLEANUP (End) ---
+
     const context = await browser.newContext({
       ignoreHTTPSErrors: true, 
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
@@ -107,6 +119,15 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
 
       // Get raw text from body
       const pageContent = await page.evaluate(() => document.body.innerText);
+
+      // --- SOFT BLOCK DETECTION (Start) ---
+      // Sometimes they send a 200 OK but the page says "Pardon Our Interruption"
+      if (pageContent.includes('Pardon Our Interruption') || pageContent.includes('human verification') || pageContent.includes('Access Denied')) {
+        console.error(`\n🛑 SOFT BLOCK DETECTED (Page ${pageNum}). The IP ${sessionId} is burned.`);
+        console.error(`   Response preview: ${pageContent.substring(0, 100)}`);
+        break; 
+      }
+      // --- SOFT BLOCK DETECTION (End) ---
 
       let data;
       try {
