@@ -154,9 +154,31 @@ async function getMasterAccessToken() {
 }
 
 /**
+ * Helper to push a log message to the database and update progress counts.
+ */
+async function updateJobLog(jobId, message, processedCount = null, totalCount = null) {
+  try {
+    // Construct the dynamic update object
+    // We utilize the '||' operator for array concatenation in Postgres
+    await sql`
+      UPDATE playlist_jobs
+      SET 
+        log_history = array_append(log_history, ${message}),
+        processed_artists = COALESCE(${processedCount}, processed_artists),
+        total_artists = COALESCE(${totalCount}, total_artists)
+      WHERE id = ${jobId};
+    `;
+  } catch (err) {
+    // Fail silently so we don't crash the main worker if a log fails
+    logger.warn(`Failed to update log for job ${jobId}: ${err.message}`);
+  }
+}
+
+/**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres) {
+async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres) {
+  await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
   const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
   // Check if we found any artists.
@@ -164,6 +186,8 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
     logger.info(`No artists found for "${city}" on ${date}.`);
     return { playlistId: null };
   }
+
+  await updateJobLog(jobId, `Scout returned! Found ${rawArtistList.length} artists.`, 0, rawArtistList.length);
 
   let nameSuffix = ''; // Start with an empty suffix
   if (excludedGenres && excludedGenres.length > 0) {
@@ -184,6 +208,9 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       'Content-Type': 'application/json'
     }
   };
+
+  await updateJobLog(jobId, "Creating empty playlist on Spotify...");
+
   const createPlaylistResponse = await axios.post(
     `https://api.spotify.com/v1/users/${MASTER_SPOTIFY_ID}/playlists`,
     playlistData,
@@ -196,6 +223,8 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
   logger.info(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
+
+  await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueArtists.length} unique artists...`, 0, uniqueArtists.length);
 
   // --- SYNONYM MAP ---
   const genreSynonymMap = {
@@ -240,8 +269,10 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
   // Loop through each artist and process
   for (let i = 0; i < uniqueArtists.length; i++) {
     const artistName = uniqueArtists[i];
-
+    
+    await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueArtists.length);
     logger.info(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
+
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -306,6 +337,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
 
         if (hasExcludedGenre) {
           // This artist MATCHES the exclusion list, so we SKIP them.
+          await updateJobLog(jobId, `  -> Skipped "${bestMatch.name}" (Genre: ${bestMatch.genres[0]})`);
           logger.info(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
           spotifyArtistId = null; // Set to null to skip track-adding
         }
@@ -337,6 +369,7 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
           );
           // Use bestMatch.name for the log since artistName can be slightly different
           const logName = bestMatch ? bestMatch.name : artistName;
+          await updateJobLog(jobId, `  -> Added ${trackUris.length} songs for ${logName}`);
           logger.info(`  -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
 
           tracksAddedCount += trackUris.length;
@@ -391,6 +424,8 @@ async function runCurationLogic(city, date, number_of_songs, accessToken, latitu
       }
     }
   }
+
+  await updateJobLog(jobId, "Curation complete! Finalizing playlist...", uniqueArtists.length, uniqueArtists.length);
   logger.info(`\nCuration complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
@@ -494,6 +529,7 @@ async function processJobQueue() {
 
     // Run our curation logic with the job's data
     const { playlistId } = await runCurationLogic(
+      job.id,
       job.search_city,
       job.search_date,
       job.number_of_songs,
@@ -505,12 +541,12 @@ async function processJobQueue() {
 
     // Handle Success
     logger.info(`WORKER (7/7): Curation logic complete for job ${job.id}. PlaylistID: ${playlistId}`);
-      if (playlistId) {
-      await sql`
-        UPDATE playlist_jobs 
-        SET status = 'complete', playlist_id = ${playlistId}
-        WHERE id = ${job.id};
-      `;
+    if (playlistId) {
+    await sql`
+      UPDATE playlist_jobs 
+      SET status = 'complete', playlist_id = ${playlistId}
+      WHERE id = ${job.id};
+    `;
     } else {
       logger.warn(`WORKER: Job ${job.id} found no artists. Marking as 'failed'.`);
       await sql`
@@ -783,7 +819,13 @@ app.get('/api/playlists/status', async (req, res) => {
 
   try {
     const jobResult = await sql`
-      SELECT status, playlist_id, error_message 
+      SELECT 
+        status, 
+        playlist_id, 
+        error_message, 
+        log_history,       -- New column
+        total_artists,     -- New column
+        processed_artists  -- New column
       FROM playlist_jobs 
       WHERE id = ${jobId};
     `;
@@ -799,7 +841,12 @@ app.get('/api/playlists/status', async (req, res) => {
     res.json({
       status: job.status,
       playlistId: job.playlist_id,
-      error: job.error_message
+      error: job.error_message,
+      logs: job.log_history || [],
+      progress: {
+      total: job.total_artists || 0,
+      current: job.processed_artists || 0
+      }
     });
 
   } catch (error) {

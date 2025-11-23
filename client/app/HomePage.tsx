@@ -3,6 +3,7 @@
 // Import 'useState' from React
 import { useState, useEffect } from 'react';
 import { text } from 'stream/consumers';
+import LiveActivityFeed from './components/LiveActivityFeed';
 
 type CitySuggestion = {
   name: string;
@@ -32,6 +33,9 @@ export default function HomePage() {
   const [jobId, setJobId] = useState('');
   // This will hold user-friendly text like "Your job is pending..." or "Building...".
   const [pollingStatusMessage, setPollingStatusMessage] = useState('');
+
+  const [logs, setLogs] = useState<string[]>([]);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
   
 
   // --- TIMEZONE-SAFE DATE LOGIC ---
@@ -151,19 +155,22 @@ export default function HomePage() {
 
       const data = await response.json();
 
+      // Always update logs and progress if they exist
+      if (data.logs) setLogs(data.logs);
+      if (data.progress) setProgress(data.progress);
+
       switch (data.status) {
         case 'pending':
-          setPollingStatusMessage('Your job is in the queue...');
+          setPollingStatusMessage('Queueing job...');
           break;
         case 'building':
-          setPollingStatusMessage('Building your playlist... this may take a minute.');
+          setPollingStatusMessage('Curating playlist...');
           break;
         case 'complete':
           // --- SUCCESS! Job is done, now check the result ---
           setJobId(''); // Clear the job ID
           setIsLoading(false); // Stop loading
           setPollingStatusMessage(''); // Clear the status
-
           if (data.playlistId) {
             // We got a playlist! Show the success link.
             setPlaylistId(data.playlistId); 
@@ -338,7 +345,19 @@ export default function HomePage() {
           Enter a city and date to create a playlist of artists playing shows today, tomorrow, or whenever!
         </p>
         {/* --- Form layout wrapper --- */}
-        <div className="flex flex-col items-center gap-4 mt-4">
+        <div className="flex flex-col items-center gap-4 mt-4 w-full">
+
+          {jobId ? (
+            /* MODE A: If a job is running, show the Notebook/Feed */
+            <LiveActivityFeed 
+              status={pollingStatusMessage}
+              logs={logs}
+              currentCount={progress.current}
+              totalCount={progress.total}
+            />
+          ) : (
+            /* MODE B: If idle, show the inputs (Wrapped in a Fragment <>) */
+            <>
 
           {/* --- City Autocomplete Wrapper --- */}
           {/* 'relative' is crucial for positioning the dropdown */}
@@ -459,9 +478,11 @@ export default function HomePage() {
             disabled={isLoading || !selectedCity || !date}
             className="py-2 px-4 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-amber-700 disabled:opacity-50 mt-2"
           >
-            {isLoading ? (pollingStatusMessage || 'Loading...') : 'Create'}
+            Create
           </button>
-        </div>
+        </>
+      )}
+    </div>
 
         {/* --- Results Area --- */}
         <div className="mt-6">
