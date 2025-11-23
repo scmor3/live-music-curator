@@ -143,3 +143,7 @@ server/worldcities.csv
 server/seed_output_debug.json
 server/utils/cleanSimpleMap.js
 server/utils/worldcities_clean.csv
+server/utils/testScraper.js
+server/utils/testScraperPlaywright.js
+
+
