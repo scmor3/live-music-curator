@@ -4,9 +4,10 @@ const axios = require('axios');
 const postgres = require('postgres');
 const levenshtein = require('fast-levenshtein');
 const cors = require('cors');
-const { scrapeBandsintown } = require('./utils/bandsintownScraper');
-require('dotenv').config();
+const path = require('path'); 
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
+const { scrapeBandsintown } = require('./utils/bandsintownScraper');
 // --- Logger Configuration ---
 // Get the log level from environment variables. Default to 'info' for production.
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
