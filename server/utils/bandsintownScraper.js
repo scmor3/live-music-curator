@@ -169,6 +169,8 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
   } finally {
     if (browser) {
       if (ENABLE_DEBUG) console.log('[CLEANUP] Closing browser...');
+      const used = process.memoryUsage().heapUsed / 1024 / 1024;
+      if (ENABLE_DEBUG) console.log(`[MEMORY] Peak Scraper Usage: ~${Math.round(used * 100) / 100} MB (Node) + Browser Process`);
       await browser.close();
     }
   }

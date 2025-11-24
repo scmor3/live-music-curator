@@ -271,6 +271,16 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // Loop through each artist and process
   for (let i = 0; i < uniqueArtists.length; i++) {
     const artistName = uniqueArtists[i];
+
+    // Log memory usage every 5 artists
+    if (i % 5 === 0) {
+      const memoryUsage = process.memoryUsage();
+      // Heap Used is the most relevant metric for your code's object usage
+      const heapUsedMB = Math.round(memoryUsage.heapUsed / 1024 / 1024 * 100) / 100;
+      const rssMB = Math.round(memoryUsage.rss / 1024 / 1024 * 100) / 100;
+      
+      logger.debug(`[MEMORY] Artist ${i}/${uniqueArtists.length} - Heap: ${heapUsedMB} MB | RSS: ${rssMB} MB`);
+    }
     
     // await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueArtists.length);
     logger.info(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
@@ -587,6 +597,32 @@ async function processJobQueue() {
 }
 
 // Main API Routes
+
+/**
+ * Fire-and-Forget Keep-Alive Route.
+ * Designed for free-tier cron jobs (cron-jobs.org).
+ * 1. Responds immediately (preventing cron timeout).
+ * 2. Pings DB in background to keep it awake.
+ */
+app.get('/api/keep-alive', (req, res) => {
+  // 1. Respond INSTANTLY to satisfy the cron job
+  res.status(200).send('Server is awake. Pinging DB in background...');
+
+  // 2. Background Task (Fire and Forget)
+  // We do NOT await this, so the response is not blocked.
+  (async () => {
+    try {
+      logger.debug('[KEEP-ALIVE] Background DB ping starting...');
+      // A simple query to wake up Supabase
+      await sql`SELECT 1`;
+      logger.debug('[KEEP-ALIVE] DB is awake and responsive.');
+    } catch (err) {
+      // It's okay if this fails occasionally during a hard sleep.
+      // The cron job will just try again in 14 mins.
+      logger.warn('[KEEP-ALIVE] DB ping failed:', err.message);
+    }
+  })();
+});
 
 /**
  * Health check route.
