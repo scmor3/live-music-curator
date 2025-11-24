@@ -178,7 +178,7 @@ async function updateJobLog(jobId, message, processedCount = null, totalCount = 
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
 async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres) {
-  await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
+  // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
   const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
   // Check if we found any artists.
@@ -187,7 +187,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     return { playlistId: null };
   }
 
-  await updateJobLog(jobId, `Scout returned! Found ${rawArtistList.length} artists.`, 0, rawArtistList.length);
+  // await updateJobLog(jobId, `Scout returned! Found ${rawArtistList.length} artists.`, 0, rawArtistList.length);
 
   let nameSuffix = ''; // Start with an empty suffix
   if (excludedGenres && excludedGenres.length > 0) {
@@ -209,7 +209,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
   };
 
-  await updateJobLog(jobId, "Creating empty playlist on Spotify...");
+  // await updateJobLog(jobId, "Creating empty playlist on Spotify...");
 
   const createPlaylistResponse = await axios.post(
     `https://api.spotify.com/v1/users/${MASTER_SPOTIFY_ID}/playlists`,
@@ -222,9 +222,11 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // De-duplicate the list - normalize to lowercase to catch simple duplicates
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
+
+  await updateJobLog(jobId, `Found ${uniqueArtists.length} artists.`, 0, uniqueArtists.length);
   logger.info(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
 
-  await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueArtists.length} unique artists...`, 0, uniqueArtists.length);
+  // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueArtists.length} unique artists...`, 0, uniqueArtists.length);
 
   // --- SYNONYM MAP ---
   const genreSynonymMap = {
@@ -270,7 +272,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   for (let i = 0; i < uniqueArtists.length; i++) {
     const artistName = uniqueArtists[i];
     
-    await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueArtists.length);
+    // await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueArtists.length);
     logger.info(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
 
     try {
@@ -283,6 +285,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
         logger.info(`  -> No Spotify results for "${artistName}".`);
+        await updateJobLog(jobId, `SKIPPED:${artistName} (Not on Spotify)`, i, uniqueArtists.length);
         continue;
       }
 
@@ -323,6 +326,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         } else {
           // No good match found
           logger.warn(`No close match for "${artistName}". Skipping.`);
+          await updateJobLog(jobId, `SKIPPED:${artistName} (Unverified)`, i, uniqueArtists.length);
         }
       }
 
@@ -337,8 +341,9 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 
         if (hasExcludedGenre) {
           // This artist MATCHES the exclusion list, so we SKIP them.
-          await updateJobLog(jobId, `  -> Skipped "${bestMatch.name}" (Genre: ${bestMatch.genres[0]})`);
+          // await updateJobLog(jobId, `  -> Skipped "${bestMatch.name}" (Genre: ${bestMatch.genres[0]})`);
           logger.info(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
+          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (Genre: ${bestMatch.genres[0]})`, i, uniqueArtists.length);
           spotifyArtistId = null; // Set to null to skip track-adding
         }
     }
@@ -369,12 +374,13 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           );
           // Use bestMatch.name for the log since artistName can be slightly different
           const logName = bestMatch ? bestMatch.name : artistName;
-          await updateJobLog(jobId, `  -> Added ${trackUris.length} songs for ${logName}`);
+          await updateJobLog(jobId, `ARTIST:${logName}`, i, uniqueArtists.length);
           logger.info(`  -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
 
           tracksAddedCount += trackUris.length;
         } else {
           logger.info(`  -> Found artist, but they have no top tracks. Skipping track add.`);
+          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, i, uniqueArtists.length);
         }
       }
     } catch (error) {
@@ -425,7 +431,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
   }
 
-  await updateJobLog(jobId, "Curation complete! Finalizing playlist...", uniqueArtists.length, uniqueArtists.length);
+  await updateJobLog(jobId, "Curation complete!", uniqueArtists.length, uniqueArtists.length);
   logger.info(`\nCuration complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
