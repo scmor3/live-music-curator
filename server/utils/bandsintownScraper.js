@@ -1,5 +1,6 @@
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth');
+const { execSync } = require('child_process');
 
 chromium.use(stealth());
 
@@ -48,8 +49,24 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
+        '--disable-dev-shm-usage', // Crucial for Docker/Render
         '--disable-gpu',
+        // AGGRESSIVE MEMORY SAVING FLAGS
+        '--disable-extensions',
+        '--disable-component-extensions-with-background-pages',
+        '--disable-default-apps',
+        '--mute-audio',
+        '--no-default-browser-check',
+        '--no-first-run',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-infobars',
+        '--disable-breakpad', // Disables crash reporting (saves RAM)
+        '--disable-canvas-aa', // Disable Antialiasing
+        '--disable- 2d-canvas-clip-aa',
+        '--disable-gl-drawing-for-tests',
+        '--enable-low-end-device-mode', // Tells Chrome to be stingy with RAM
       ]
     };
 
@@ -100,6 +117,13 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
 
       // Go to the URL and capture the response object
       const response = await page.goto(apiUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+      if (ENABLE_DEBUG) {
+        const browserMem = getBrowserMemory();
+        const nodeMem = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        console.log(`[MEMORY] Page ${pageNum} | 🧠 Node: ${nodeMem} MB | 🎭 Browser: ${Math.round(browserMem)} MB`);
+      }
+      
       const status = response.status();
 
       // --- 4. STATUS CODE HANDLING ---
@@ -169,6 +193,18 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
   } finally {
     if (browser) {
       if (ENABLE_DEBUG) console.log('[CLEANUP] Closing browser...');
+      // Measure Node.js Memory
+      const nodeUsed = process.memoryUsage().rss / 1024 / 1024;
+      
+      // Measure Invisible Browser Memory
+      const browserUsed = getBrowserMemory();
+      
+      // Total
+      const totalUsed = nodeUsed + browserUsed;
+
+      if (ENABLE_DEBUG) {
+        console.log(`[MEMORY] 🧠 Node: ${Math.round(nodeUsed)} MB | 🎭 Browser: ${Math.round(browserUsed)} MB | 📦 Total: ${Math.round(totalUsed)} MB`);
+      }
       await browser.close();
     }
   }
@@ -178,3 +214,22 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
 }
 
 module.exports = { scrapeBandsintown };
+
+function getBrowserMemory() {
+  try {
+    // 1. Use '[h]eadless_shell' to prevent grep from matching itself.
+    // 2. Use 'rss=' to remove headers if you weren't already using -o (though your command is fine).
+    // 3. We calculate the sum in KB first.
+    const cmd = "ps -A -o rss,comm | grep [h]eadless_shell | awk '{ sum += $1 } END { print sum / 1024 }'";
+    
+    const output = execSync(cmd).toString().trim();
+    
+    // If output is empty (no processes found), return 0
+    if (!output) return 0;
+
+    const mb = parseFloat(output);
+    return isNaN(mb) ? 0 : mb;
+  } catch (error) {
+    return 0; 
+  }
+}
