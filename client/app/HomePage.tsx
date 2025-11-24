@@ -366,7 +366,6 @@ export default function HomePage() {
               status={pollingStatusMessage}
               // If logs are empty but job is running, pass empty array (The child handles the "Hype Cycle" now)
               logs={logs}
-              currentCount={progress.current}
               totalCount={progress.total}
               playlistId={playlistId}
               errorMessage={error}
