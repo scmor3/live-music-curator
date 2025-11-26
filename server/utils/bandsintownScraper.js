@@ -35,7 +35,7 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
   }
 
   // [DEBUG] FORCE PLAYWRIGHT: Set this to TRUE to skip 'got-scraping'
-  const FORCE_PLAYWRIGHT = false;
+  const FORCE_PLAYWRIGHT = process.env.FORCE_PLAYWRIGHT === 'true';
 
   // --- ATTEMPT 1: LIGHTWEIGHT (Got-Scraping) ---
   if (!FORCE_PLAYWRIGHT) {
@@ -155,7 +155,7 @@ async function scrapeWithGot(dateStr, latitude, longitude, sessionId) {
     if (!data.urlForNextPageOfEvents) break;
 
     pageNum++;
-    await sleep(500); // Be polite
+    await sleep(775); // Be polite
   }
 
   return allArtistNames;
