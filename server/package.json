@@ -9,7 +9,8 @@
     "seed": "node utils/seedDatabase.js",
     "dedupe": "node utils/cleanSimpleMap.js",
     "populate:city:populations": "node utils/populateCityPopulations.js",
-    "start:local": "dotenv -e .env -- node index.js"
+    "start:local": "dotenv -e .env -- node index.js",
+    "postinstall": "npx playwright install chromium"
   },
   "keywords": [],
   "author": "",
