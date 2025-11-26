@@ -9,7 +9,7 @@ const PROXY_PORT = process.env.PROXY_PORT;
 const PROXY_USER = process.env.PROXY_USER;
 const PROXY_PASS = process.env.PROXY_PASS;
 
-const ENABLE_DEBUG = true; // Set to false to silence logs
+const ENABLE_DEBUG = process.env.ENABLE_DEBUG_SCRAPER === 'true'; // Set to false to silence logs
 
 // Helper function to pause execution
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
