@@ -21,19 +21,12 @@ function formatDateForBandsintown(dateStr) {
   return formattedDate;
 }
 /**
- * Scrapes all artist names for a given date and location by paginating an API.
+ * MAIN CONTROLLER
+ * 1. Tries 'got-scraping' (Fast/Cheap).
+ * 2. If 'got' fails, is blocked, or returns 0 results, falls back to Playwright (Heavy/Robust). * Scrapes all artist names for a given date and location by paginating an API.
  * We now pass in the latitude and longitude.
  */
 async function scrapeBandsintown(dateStr, latitude, longitude) {
-  const formattedDate = formatDateForBandsintown(dateStr);
-  const allArtistNames = [];
-  let pageNum = 1;
-  let browser = null
-
-  // --- 1. INITIALIZATION & LOGGING ---
-  console.log(`[PROXY CONFIG] URL: ${PROXY_URL || 'MISSING'}, PORT: ${PROXY_PORT || 'MISSING'}, USER: ${PROXY_USER ? 'SET' : 'NOT SET'}`);
-  // Generate a unique session ID for this entire function call (City + Date)
-  // This keeps our IP stable during pagination but rotates it for the next city search.
   const sessionId = `session_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
   if (ENABLE_DEBUG) {
@@ -41,32 +34,163 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
     console.log(`[PROXY] Session ID: ${sessionId}`);
   }
 
+  // [DEBUG] FORCE PLAYWRIGHT: Set this to TRUE to skip 'got-scraping'
+  const FORCE_PLAYWRIGHT = false;
+
+  // --- ATTEMPT 1: LIGHTWEIGHT (Got-Scraping) ---
+  if (!FORCE_PLAYWRIGHT) {
+    try {
+      if (ENABLE_DEBUG) console.log(`[METHOD] Attempting lightweight scrape (got-scraping)...`);
+      const results = await scrapeWithGot(dateStr, latitude, longitude, sessionId);
+
+    // [PARANOID CHECK]
+    // If we got 0 results, we don't trust it. It might be a soft block or a Cloudflare challenge 
+    // that we didn't catch. We force the fallback to be sure.
+    if (results.length === 0) {
+       console.warn(`[WARNING] Lightweight scrape found 0 artists. Assuming block/error. Falling back to Browser.`);
+       throw new Error('Zero results from Got-Scraping');
+    }
+
+      if (ENABLE_DEBUG) console.log(`[SUCCESS] Lightweight scrape finished with ${results.length} artists.`);
+      return results;
+
+    } catch (error) {
+      console.warn(`[WARNING] Lightweight scrape failed. Falling back to Browser. Reason: ${error.error}`);
+      if (error.code) console.error('Error Code:', error.code);
+      console.log(`[FALLBACK] Launching full browser (Playwright)...`);
+    }
+  } else {
+      console.log('[DEBUG] Forcing Playwright Fallback...');
+  }
+    // --- ATTEMPT 2: HEAVYWEIGHT (Playwright) ---
+    if (ENABLE_DEBUG) console.log(`[METHOD] Launching full browser (Playwright)...`);
+    return await scrapeWithPlaywright(dateStr, latitude, longitude, sessionId);
+  }
+
+/**
+ * METHOD A: Lightweight HTTP Request (Low RAM, High Speed)
+ * Mimics browser TLS/Headers without launching Chromium.
+ */
+async function scrapeWithGot(dateStr, latitude, longitude, sessionId) {
+  // Dynamic import because got-scraping is ESM
+  const { gotScraping } = await import('got-scraping');
+  // const { HttpsProxyAgent } = await import('hpagent');
+
+  const formattedDate = formatDateForBandsintown(dateStr);
+  const allArtistNames = [];
+  let pageNum = 1;
+
+  // Configure Proxy Agent
+  const proxyUrl = `http://${PROXY_USER}-sessid-${sessionId}:${PROXY_PASS}@${PROXY_URL}:${PROXY_PORT}`;
+  // const agent = {
+  //   https: new HttpsProxyAgent({ proxy: proxyUrl })
+  // };
+
+  if (ENABLE_DEBUG) {
+    try {
+      console.log('[PROXY CHECK] Verifying IP address...');
+      const ipCheck = await gotScraping({
+        url: 'https://api.ipify.org?format=json',
+        responseType: 'json',
+        proxyUrl: proxyUrl,  // ← Use native proxyUrl instead of agent
+        retry: { limit: 1 }
+      });
+      console.log(`[PROXY CHECK] Current Public IP: ${ipCheck.body.ip}`);
+    } catch (err) {
+      console.warn(`[PROXY CHECK] Failed to verify IP: ${err.message}`);
+    }
+  }
+
+  while (true) {
+    const apiUrl = `https://www.bandsintown.com/choose-dates/fetch-next/upcomingEvents?date=${formattedDate}&page=${pageNum}&longitude=${longitude}&latitude=${latitude}&genre_query=all-genres`;
+    
+    if (ENABLE_DEBUG) {
+      const nodeMem = Math.round(process.memoryUsage().rss / 1024 / 1024);
+      console.log(`[GOT] Fetching page ${pageNum}... | 🧠 RAM: ${nodeMem} MB`);
+    }
+
+    // Make the request
+    const response = await gotScraping({
+      url: apiUrl,
+      method: 'GET',
+      responseType: 'json',
+      proxyUrl: proxyUrl,  // ← Use native proxyUrl instead of agent
+      // // [FIX] Force HTTP/1.1 to ensure proxy tunneling works reliably with residential IPs
+      // http2: false,
+      retry: { limit: 2 }, // Auto-retry on network blips
+      headerGeneratorOptions: {
+        browsers: [{ name: 'chrome', minVersion: 110 }],
+        devices: ['desktop'],
+        locales: ['en-US'],
+      }
+    });
+
+    const data = response.body;
+
+    // [CLOUDFLARE CHECK]
+    // Sometimes 'responseType: json' parses HTML successfully if it's weirdly formatted,
+    // or we didn't catch the error. Explicitly check for strings that look like HTML.
+    if (typeof data === 'string' && (data.includes('<!DOCTYPE html>') || data.includes('Cloudflare'))) {
+        throw new Error('Cloudflare Blocked Request');
+    }
+
+    // DIAGNOSTIC LOGGING
+    // If we find no events, print what we DID find before quitting.
+    // if (!data.events || data.events.length === 0) {
+    //   if (ENABLE_DEBUG) {
+    //     console.warn(`[GOT WARNING] Page ${pageNum} returned 0 events.`);
+    //     console.warn(`[GOT DIAGNOSTIC] Response Headers:`, response.headers);
+    //     // Print the first 500 chars of the body to see if it's an error message
+    //     console.warn(`[GOT DIAGNOSTIC] Body Preview: ${JSON.stringify(data).substring(0, 500)}`);
+    //   }
+    // }
+
+    const events = data.events || [];
+
+    if (events.length === 0) break;
+
+    const artistsOnPage = events.map(event => event.artistName);
+    allArtistNames.push(...artistsOnPage);
+
+    if (!data.urlForNextPageOfEvents) break;
+
+    pageNum++;
+    await sleep(500); // Be polite
+  }
+
+  return allArtistNames;
+}
+
+/**
+ * METHOD B: Full Browser (High RAM, High Reliability)
+ * The fallback if lightweight scraping gets blocked.
+ */
+async function scrapeWithPlaywright(dateStr, latitude, longitude, sessionId) {
+  const formattedDate = formatDateForBandsintown(dateStr);
+  const allArtistNames = [];
+  let pageNum = 1;
+  let browser = null
+
+  // --- 1. INITIALIZATION & LOGGING ---
+  if (ENABLE_DEBUG) console.log(`[PROXY CONFIG] URL: ${PROXY_URL || 'MISSING'}, PORT: ${PROXY_PORT || 'MISSING'}, USER: ${PROXY_USER ? 'SET' : 'NOT SET'}`);
+
   try {
     // --- 2. PROXY SETUP ---
-    // We build the launch options object dynamically based on whether proxy vars exist.
     let launchOptions = {
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', // Crucial for Docker/Render
+        '--disable-dev-shm-usage',
+        // Aggressive Memory Saving Flags
         '--disable-gpu',
-        // AGGRESSIVE MEMORY SAVING FLAGS
         '--disable-extensions',
         '--disable-component-extensions-with-background-pages',
-        '--disable-default-apps',
         '--mute-audio',
-        '--no-default-browser-check',
-        '--no-first-run',
         '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
-        '--disable-infobars',
-        '--disable-breakpad', // Disables crash reporting (saves RAM)
-        '--disable-canvas-aa', // Disable Antialiasing
-        '--disable- 2d-canvas-clip-aa',
-        '--disable-gl-drawing-for-tests',
-        '--enable-low-end-device-mode', // Tells Chrome to be stingy with RAM
+        '--disable-breakpad',
+        '--enable-low-end-device-mode',
       ]
     };
 
@@ -88,7 +212,7 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
 
     // --- ZOMBIE CLEANUP (Start) --- 
     // This catches Ctrl+C and closes the browser so it doesn't stay running in the background.
-    signalHandler = async () => {
+    const signalHandler = async () => {
       if (browser) {
         console.log('\n[SIGINT] Force closing browser to prevent zombie process...');
         await browser.close();
@@ -98,26 +222,33 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
     process.on('SIGINT', signalHandler);
     // --- ZOMBIE CLEANUP (End) ---
 
-    const context = await browser.newContext({
-      ignoreHTTPSErrors: true, 
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
-    });
-
-    // Block heavy resources to speed up scraping (images, fonts, css)
-    await context.route('**/*.{png,jpg,jpeg,gif,css,woff,woff2}', route => route.abort());
-
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
+
+    // [DEBUG] IP CHECK PLAYWRIGHT
+    if (ENABLE_DEBUG) {
+        console.log('[PLAYWRIGHT] Checking IP...');
+        try {
+            await page.goto('https://api.ipify.org?format=json');
+            const ipContent = await page.evaluate(() => document.body.innerText);
+            const ipJson = JSON.parse(ipContent);
+            console.log(`[PLAYWRIGHT] Current Public IP: ${ipJson.ip}`);
+        } catch (e) {
+            console.warn(`[PLAYWRIGHT] Failed to check IP: ${e.message}`);
+        }
+    }
 
     // --- 3. PAGINATION LOOP ---
     // Using while(true) to handle multiple exit conditions explicitly
     while (true) {
       const apiUrl = `https://www.bandsintown.com/choose-dates/fetch-next/upcomingEvents?date=${formattedDate}&page=${pageNum}&longitude=${longitude}&latitude=${latitude}&genre_query=all-genres`;
       
-      if (ENABLE_DEBUG) console.log(`[PAGE ${pageNum}] Navigating to API...`);
+      if (ENABLE_DEBUG) console.log(`[PLAYWRIGHT] Navigating to API page ${pageNum}...`);
 
       // Go to the URL and capture the response object
       const response = await page.goto(apiUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
+      // Memory Check
       if (ENABLE_DEBUG) {
         const browserMem = getBrowserMemory();
         const nodeMem = Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -189,22 +320,12 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
     }
 
   } catch (error) {
-    console.error(`[CRITICAL ERROR] Scraper failed: ${error.message}`);
+    console.error(`[PLAYWRIGHT ERROR] Scraper failed: ${error.message}`);
+    // If Playwright fails, we return what we found so far rather than nothing
+    return allArtistNames;
   } finally {
     if (browser) {
       if (ENABLE_DEBUG) console.log('[CLEANUP] Closing browser...');
-      // Measure Node.js Memory
-      const nodeUsed = process.memoryUsage().rss / 1024 / 1024;
-      
-      // Measure Invisible Browser Memory
-      const browserUsed = getBrowserMemory();
-      
-      // Total
-      const totalUsed = nodeUsed + browserUsed;
-
-      if (ENABLE_DEBUG) {
-        console.log(`[MEMORY] 🧠 Node: ${Math.round(nodeUsed)} MB | 🎭 Browser: ${Math.round(browserUsed)} MB | 📦 Total: ${Math.round(totalUsed)} MB`);
-      }
       await browser.close();
     }
   }
@@ -212,8 +333,6 @@ async function scrapeBandsintown(dateStr, latitude, longitude) {
   if (ENABLE_DEBUG) console.log(`[COMPLETE] Total artists found: ${allArtistNames.length}`);
   return allArtistNames;
 }
-
-module.exports = { scrapeBandsintown };
 
 function getBrowserMemory() {
   try {
@@ -233,3 +352,5 @@ function getBrowserMemory() {
     return 0; 
   }
 }
+
+module.exports = { scrapeBandsintown };
