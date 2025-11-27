@@ -295,7 +295,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
         logger.info(`  -> No Spotify results for "${artistName}".`);
-        await updateJobLog(jobId, `SKIPPED:${artistName} (Not on Spotify)`, i, uniqueArtists.length);
+        await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueArtists.length);
         continue;
       }
 
@@ -336,7 +336,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         } else {
           // No good match found
           logger.warn(`No close match for "${artistName}". Skipping.`);
-          await updateJobLog(jobId, `SKIPPED:${artistName} (Unverified)`, i, uniqueArtists.length);
+          await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueArtists.length);
         }
       }
 
