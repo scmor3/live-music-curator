@@ -362,6 +362,7 @@ export default function HomePage() {
 
           {jobId ? (
             /* MODE A: If a job is running, show the Notebook/Feed */
+            <div className="flex flex-col items-center w-full gap-4">
             <LiveActivityFeed 
               status={pollingStatusMessage}
               // If logs are empty but job is running, pass empty array (The child handles the "Hype Cycle" now)
@@ -371,6 +372,16 @@ export default function HomePage() {
               errorMessage={error}
               onReset={handleStartOver}
             />
+            {/* NEW: Emergency Exit Button */}
+            {!playlistId && !error && (
+              <button 
+                onClick={handleStartOver}
+                className="text-sm text-zinc-500 hover:text-red-400 underline underline-offset-2 transition-colors"
+              >
+                Cancel Curation
+              </button>
+            )}
+          </div>
           ) : (
             /* MODE B: If idle, show the inputs (Wrapped in a Fragment <>) */
             <>
