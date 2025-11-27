@@ -793,9 +793,10 @@ app.get('/api/playlists', async (req, res) => {
   // Check for an Existing Job
   // Let's not create duplicate jobs. If a user spam-clicks,
   // just return the job that's already pending or complete.
+  // We fetch 'updated_at' to check for staleness.
   try {
     const existingJob = await sql`
-      SELECT id, status, playlist_id 
+      SELECT id, status, playlist_id, updated_at 
       FROM playlist_jobs 
       WHERE 
         search_city = ${city} AND 
@@ -808,11 +809,29 @@ app.get('/api/playlists', async (req, res) => {
 
     if (existingJob.length > 0) {
       const job = existingJob[0];
-      logger.info(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}`);
-      // Return the ID of the job we found.
-      return res.json({ jobId: job.id });
-    }
 
+      // If it says "building" but hasn't been updated in 5 minutes, it's a zombie.
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      const lastUpdate = new Date(job.updated_at);
+      
+      if (job.status === 'building' && lastUpdate < fiveMinutesAgo) {
+        logger.warn(`Cache HIT (Job ${job.id}): Job is 'building' but stale (>5 mins). Marking failed and creating new job.`);
+        
+        // Mark the old one failed so we don't accidentally pick it up again
+        await sql`
+          UPDATE playlist_jobs 
+          SET status = 'failed', error_message = 'Stale job detected in cache' 
+          WHERE id = ${job.id}
+        `;
+        // We do NOT return here. We let the code fall through to "Create a New Job" below.
+        
+      } else {
+        // It's a valid running job or a completed job. Return it.
+        logger.info(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}`);
+        return res.json({ jobId: job.id });
+      }
+    }
+    
     // Create a New Job
     // Add the 'excluded_genres' array to your INSERT
     logger.info(`Cache MISS (Job): No job found for ${city} on ${date} excluding: ${genres}. Creating new job...`);
@@ -903,6 +922,23 @@ app.get('/api/playlists/status', async (req, res) => {
  */
 function startWorker() {
   logger.info('Worker loop starting... Will check for jobs every 10 seconds.');
+
+  // If the server just restarted, any job marked 'building' is actually dead.
+  // We mark them failed so the UI doesn't get stuck on them.
+  (async () => {
+    try {
+      const result = await sql`
+        UPDATE playlist_jobs 
+        SET status = 'failed', error_message = 'Server restarted during build'
+        WHERE status = 'building';
+      `;
+      if (result.count > 0) {
+        logger.warn(`[STARTUP] Cleaned up ${result.count} zombie job(s) left in 'building' state.`);
+      }
+    } catch (err) {
+      logger.error('[STARTUP] Failed to clean zombie jobs:', err);
+    }
+  })();
   
   // This lock prevents our worker from "overlapping"
   // if a single job takes longer than 10s to run.
