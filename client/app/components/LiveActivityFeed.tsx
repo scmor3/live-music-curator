@@ -1,4 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { 
+  CheckCircleIcon, 
+  ExclamationCircleIcon,
+  MusicalNoteIcon,
+  InformationCircleIcon,
+  ChevronRightIcon
+} from '@heroicons/react/24/outline';
 
 type LiveActivityFeedProps = {
   status: string;
@@ -6,6 +13,7 @@ type LiveActivityFeedProps = {
   totalCount: number;
   playlistId?: string;
   errorMessage?: string;
+  events?: any[];
   onReset: () => void;
 };
 
@@ -14,8 +22,9 @@ export default function LiveActivityFeed({
   logs, 
   totalCount, 
   playlistId, 
-  errorMessage, 
-  onReset 
+  errorMessage,
+  events = [],
+  onReset
 }: LiveActivityFeedProps) {
   
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -131,6 +140,13 @@ export default function LiveActivityFeed({
   const isComplete = status === 'complete' && !!playlistId;
   const isFailed = status === 'failed' || !!errorMessage;
 
+  // Helper to find event by artist name
+  const getEventForLog = (artistName: string) => {
+      if (!events || events.length === 0) return null;
+      const cleanName = artistName.toLowerCase().trim();
+      return events.find((e: any) => e.name.toLowerCase().trim() === cleanName);
+    };
+
   return (
     <div className="w-full max-w-lg bg-zinc-900 rounded-2xl shadow-2xl overflow-hidden border border-zinc-800 animate-in fade-in slide-in-from-bottom-4 duration-500">
       
@@ -204,43 +220,101 @@ export default function LiveActivityFeed({
 
         <div className="flex flex-col gap-3">
           {visibleLogs.map((log, index) => {
-            const isArtist = log.startsWith('ARTIST:');
-            const isSkipped = log.startsWith('SKIPPED:');
+            let type = 'info';
+            let text = log;
+            let subText = '';
+            let artistName = '';
 
-            let displayText = log;
-            if (isArtist) displayText = log.replace('ARTIST:', '');
-            if (isSkipped) displayText = log.replace('SKIPPED:', '');
+            // PARSE LOG TYPE
+            if (log.startsWith('ARTIST:')) {
+              type = 'success';
+              artistName = log.replace('ARTIST:', '').trim();
+              text = artistName;
+            } else if (log.startsWith('SKIPPED:')) {
+              type = 'skipped';
+              const parts = log.replace('SKIPPED:', '').split('(');
+              artistName = parts[0].trim();
+              text = artistName;
+              subText = 'Tracks not found';
+            }
+
+            // FIND RICH DATA (Image & Link)
+            const eventData = artistName ? getEventForLog(artistName) : null;
+            const hasLink = !!(eventData && eventData.url);
 
             return (
               <div 
                 key={index} 
-                className={`flex items-center gap-3 p-3 rounded-lg border animate-in slide-in-from-bottom-2 duration-300 ${
-                  isSkipped 
-                    ? 'bg-red-900/10 border-red-900/20' 
-                    : 'bg-zinc-800/50 border-zinc-700/50'
-                }`}
+                className={`
+                  flex items-center gap-3 p-2 rounded-lg border transition-all duration-200
+                  ${hasLink ? 'hover:bg-zinc-800 active:bg-zinc-800 active:scale-[0.98] cursor-pointer group border-transparent' : 'border-zinc-800/50 bg-zinc-900/50'}
+                  animate-in slide-in-from-bottom-2 duration-300
+                `}
+                onClick={() => {
+                  if (hasLink) window.open(eventData.url, '_blank');
+                }}
               >
-                <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center border ${
-                  isArtist 
-                    ? 'bg-dark-pastel-green/20 border-dark-pastel-green/50 text-dark-pastel-green' 
-                    : isSkipped
-                      ? 'bg-red-500/20 border-red-500/50 text-red-400'
-                      : 'bg-blue-500/20 border-blue-500/50 text-blue-400'
-                }`}>
-                  <span className="text-xs font-bold">
-                    {isArtist ? '✓' : isSkipped ? '✕' : 'i'}
-                  </span>
+                {/* --- AVATAR / ICON COLUMN --- */}
+                <div className="flex-shrink-0 relative w-10 h-10">
+                  {eventData && eventData.image ? (
+                    <img 
+                      src={eventData.image} 
+                      alt={text}
+                      className={`w-full h-full rounded-full object-cover border border-zinc-700 transition-colors ${
+                        hasLink ? 'group-hover:border-amber-500' : ''
+                      }`}
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                        (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                      }}
+                    />
+                  ) : type === 'success' ? (
+                    <div className="w-full h-full flex items-center justify-center bg-zinc-800 rounded-full border border-zinc-700">
+                      <MusicalNoteIcon className="w-5 h-5 text-green-400" />
+                    </div>
+                  ) : type === 'skipped' ? (
+                    <div className="w-full h-full flex items-center justify-center bg-zinc-800/50 rounded-full border border-zinc-700/50">
+                      <span className="text-sm font-bold text-zinc-600">?</span>
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <InformationCircleIcon className="w-5 h-5 text-zinc-500" />
+                    </div>
+                  )}
+                  
+                  {/* Fallback Icon (Hidden by default) */}
+                  <div className="hidden absolute inset-0 bg-zinc-800 rounded-full flex items-center justify-center border border-zinc-700">
+                     <MusicalNoteIcon className="w-5 h-5 text-zinc-500" />
+                  </div>
                 </div>
-                
-                <span className={`font-medium text-base sm:text-lg block leading-snug ${
-                  isArtist 
-                    ? 'text-stone-200' 
-                    : isSkipped
-                      ? 'text-zinc-500' 
-                      : 'text-blue-200 italic'
-                }`}>
-                  {displayText}
-                </span>
+
+                {/* --- TEXT COLUMN --- */}
+                <div className="flex-1 min-w-0 flex flex-col justify-center">
+                  <span className={`font-medium text-base truncate leading-snug ${
+                    type === 'success' ? 'text-stone-200' : 
+                    type === 'skipped' ? 'text-zinc-500' : 'text-blue-200 italic'
+                  }`}>
+                    {text}
+                  </span>
+                  
+                  {/* Subtext Logic */}
+                  {type === 'skipped' ? (
+                    <p className="text-xs text-red-400/80 mt-0.5 font-medium">
+                      {subText}
+                    </p>
+                  ) : type === 'success' && eventData && eventData.venue ? (
+                     <p className="text-xs text-zinc-500 truncate group-hover:text-amber-500/80 transition-colors mt-0.5">
+                       @ {eventData.venue}
+                     </p>
+                  ) : null}
+                </div>
+
+                {/* --- CHEVRON (Mobile Affordance) --- */}
+                {hasLink && (
+                  <div className="flex-shrink-0 pl-1">
+                    <ChevronRightIcon className="w-5 h-5 text-zinc-600 group-hover:text-amber-500 transition-colors" />
+                  </div>
+                )}
               </div>
             );
           })}

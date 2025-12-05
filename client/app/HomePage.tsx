@@ -37,6 +37,7 @@ export default function HomePage() {
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   
+  const [events, setEvents] = useState<any[]>([]);
 
   // --- TIMEZONE-SAFE DATE LOGIC ---
   // Helper function to pad numbers (e.g., 9 -> "09")
@@ -173,7 +174,10 @@ export default function HomePage() {
           setPollingStatusMessage('complete');
           if (data.playlistId) {
             // We got a playlist! Show the success link.
-            setPlaylistId(data.playlistId); 
+            setPlaylistId(data.playlistId);
+            if (data.events) {
+              setEvents(data.events);
+            }
           } else {
             // We got a 'null' playlist, which means no artists were found.
             // This is a "success" from the worker, but an "error" for the user.
@@ -342,6 +346,7 @@ export default function HomePage() {
     setProgress({ current: 0, total: 0 });
     setPollingStatusMessage('');
     setError('');
+    setEvents([]);
     // We don't clear the form inputs (city/date) so they can easily tweak them!
   };
 
@@ -363,6 +368,8 @@ export default function HomePage() {
           {jobId ? (
             /* MODE A: If a job is running, show the Notebook/Feed */
             <div className="flex flex-col items-center w-full gap-4">
+
+            {/* 1. The Notebook & Progress Bar */}
             <LiveActivityFeed 
               status={pollingStatusMessage}
               // If logs are empty but job is running, pass empty array (The child handles the "Hype Cycle" now)
@@ -372,7 +379,7 @@ export default function HomePage() {
               errorMessage={error}
               onReset={handleStartOver}
             />
-            {/* NEW: Emergency Exit Button */}
+            {/* 2. The Cancel Button (Only show if NOT done) */}
             {!playlistId && !error && (
               <button 
                 onClick={handleStartOver}
@@ -381,6 +388,7 @@ export default function HomePage() {
                 Cancel Curation
               </button>
             )}
+
           </div>
           ) : (
             /* MODE B: If idle, show the inputs (Wrapped in a Fragment <>) */
