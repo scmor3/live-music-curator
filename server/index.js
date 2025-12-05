@@ -481,7 +481,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 async function processJobQueue(workerId) {
   let job; // declared outside the 'try' so we can use it in 'catch'
   const logPrefix = `[Worker ${workerId}]`;
-  logger.superDebugdebug(`${logPrefix} (1/7): processJobQueue started.`);
+  logger.superDebug(`${logPrefix} (1/7): processJobQueue started.`);
 
   try {
     // find any job that's been "building" for too long
