@@ -13,7 +13,13 @@ const { scrapeBandsintown } = require('./utils/bandsintownScraper');
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 
 const logger = {
-  // Use for spammy, repetitive logs (like "checking for jobs")
+  // Use for SUPER spammy, repetitive logs (like "checking for jobs")
+  superDebug: (message, ...args) => {
+    if (LOG_LEVEL === 'superDebug') {
+      console.log(`[SUPER DEBUG] ${message}`, ...args);
+    }
+  },
+  // Use for spammy, repetitive logs
   debug: (message, ...args) => {
     if (LOG_LEVEL === 'debug') {
       console.log(`[DEBUG] ${message}`, ...args);
@@ -475,13 +481,13 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 async function processJobQueue(workerId) {
   let job; // declared outside the 'try' so we can use it in 'catch'
   const logPrefix = `[Worker ${workerId}]`;
-  logger.debug(`${logPrefix} (1/7): processJobQueue started.`);
+  logger.superDebugdebug(`${logPrefix} (1/7): processJobQueue started.`);
 
   try {
     // find any job that's been "building" for too long
     // (e.g., if the server crashed) and mark it as 'failed'.
     try {
-      logger.debug(`${logPrefix} (2/7): Checking for zombie jobs...`);
+      logger.superDebug(`${logPrefix} (2/7): Checking for zombie jobs...`);
       const zombieJobs = await sql`
         UPDATE playlist_jobs 
         SET 
@@ -495,14 +501,14 @@ async function processJobQueue(workerId) {
       if (zombieJobs.length > 0) {
         logger.warn(`${logPrefix} Found and reset ${zombieJobs.length} zombie job(s).`);
       }
-      logger.debug(`${logPrefix} (3/7): Zombie check complete.`);
+      logger.superDebug(`${logPrefix} (3/7): Zombie check complete.`);
     } catch (reaperError) {
       // If this fails, the DB is probably down. Log it and stop.
       logger.error(`${logPrefix} CRITICAL! Zombie reaper FAILED:`, reaperError.message);
       return; // Stop the worker run
     }
 
-    logger.debug(`${logPrefix} (4/7): Looking for a pending job...`);
+    logger.superDebug(`${logPrefix} (4/7): Looking for a pending job...`);
     // Find and "Lock" a Job
     // Find a pending job and update its status
     // This prevents two workers from accidentally grabbing the same job.
@@ -535,7 +541,7 @@ async function processJobQueue(workerId) {
     });
 
     if (!job) {
-      logger.debug(`${logPrefix} (5/7): No pending jobs found.`);
+      logger.superDebug(`${logPrefix} (5/7): No pending jobs found.`);
       return; // No jobs to do, so just stop here.
     }
 
