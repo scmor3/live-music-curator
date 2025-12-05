@@ -13,7 +13,13 @@ const { scrapeBandsintown } = require('./utils/bandsintownScraper');
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 
 const logger = {
-  // Use for spammy, repetitive logs (like "checking for jobs")
+  // Use for SUPER spammy, repetitive logs (like "checking for jobs")
+  superDebug: (message, ...args) => {
+    if (LOG_LEVEL === 'superDebug') {
+      console.log(`[SUPER DEBUG] ${message}`, ...args);
+    }
+  },
+  // Use for spammy, repetitive logs
   debug: (message, ...args) => {
     if (LOG_LEVEL === 'debug') {
       console.log(`[DEBUG] ${message}`, ...args);
@@ -165,7 +171,8 @@ async function updateJobLog(jobId, message, processedCount = null, totalCount = 
       SET 
         log_history = array_append(log_history, ${message}),
         processed_artists = COALESCE(${processedCount}, processed_artists),
-        total_artists = COALESCE(${totalCount}, total_artists)
+        total_artists = COALESCE(${totalCount}, total_artists),
+        updated_at = NOW()
       WHERE id = ${jobId};
     `;
   } catch (err) {
@@ -177,13 +184,15 @@ async function updateJobLog(jobId, message, processedCount = null, totalCount = 
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres) {
+async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, workerId) {
+  // Add log prefix for easier tracing
+  const logPrefix = `[Worker ${workerId}]`;
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
-  const rawArtistList = await scrapeBandsintown(date, latitude, longitude);
+  const rawArtistList = await scrapeBandsintown(date, latitude, longitude, workerId);
   // Check if we found any artists.
   if (!rawArtistList || rawArtistList.length === 0) {
-    logger.info(`No artists found for "${city}" on ${date}.`);
+    logger.info(`${logPrefix} No artists found for "${city}" on ${date}.`);
     return { playlistId: null };
   }
 
@@ -217,14 +226,14 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     axiosConfig
   );
   const playlistId = createPlaylistResponse.data.id;
-  logger.info(`Successfully created new playlist with ID: ${playlistId}`);
+  logger.info(`${logPrefix} Successfully created new playlist with ID: ${playlistId}`);
 
   // De-duplicate the list - normalize to lowercase to catch simple duplicates
   const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
   const uniqueArtists = [...new Set(lowercasedArtists)];
 
   await updateJobLog(jobId, `Found ${uniqueArtists.length} artists.`, 0, uniqueArtists.length);
-  logger.info(`Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
+  logger.info(`${logPrefix} Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
 
   // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueArtists.length} unique artists...`, 0, uniqueArtists.length);
 
@@ -279,12 +288,11 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
       const heapUsedMB = Math.round(memoryUsage.heapUsed / 1024 / 1024 * 100) / 100;
       const rssMB = Math.round(memoryUsage.rss / 1024 / 1024 * 100) / 100;
       
-      logger.debug(`[MEMORY] Artist ${i}/${uniqueArtists.length} - Heap: ${heapUsedMB} MB | RSS: ${rssMB} MB`);
+      logger.debug(`${logPrefix} [MEMORY] Artist ${i}/${uniqueArtists.length} - Heap: ${heapUsedMB} MB | RSS: ${rssMB} MB`);
     }
     
     // await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueArtists.length);
-    logger.info(`\n[${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
-
+    logger.info(`${logPrefix} [${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -294,7 +302,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
-        logger.info(`  -> No Spotify results for "${artistName}".`);
+        logger.info(`${logPrefix}   -> No Spotify results for "${artistName}".`);
         await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueArtists.length);
         continue;
       }
@@ -313,7 +321,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
       if (bestMatch) {
         // Found Exact Match
         spotifyArtistId = bestMatch.id;
-        logger.info(`  -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId}) & genres: ${bestMatch.genres.join(', ')}`);
+        logger.info(`${logPrefix}   -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId}) & genres: ${bestMatch.genres.join(', ')}`);
       } else {
         // No Exact Match, Check Similarity
         let closestMatch = null;
@@ -332,10 +340,10 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           // Found a close enough match
           bestMatch = closestMatch;
           spotifyArtistId = bestMatch.id;
-          logger.info(`  -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
+          logger.info(`${logPrefix}   -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
         } else {
           // No good match found
-          logger.warn(`No close match for "${artistName}". Skipping.`);
+          logger.warn(`${logPrefix} No close match for "${artistName}". Skipping.`);
           await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueArtists.length);
         }
       }
@@ -352,7 +360,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         if (hasExcludedGenre) {
           // This artist MATCHES the exclusion list, so we SKIP them.
           // await updateJobLog(jobId, `  -> Skipped "${bestMatch.name}" (Genre: ${bestMatch.genres[0]})`);
-          logger.info(`  -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
+          logger.info(`${logPrefix}   -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
           await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (Genre: ${bestMatch.genres[0]})`, i, uniqueArtists.length);
           spotifyArtistId = null; // Set to null to skip track-adding
         }
@@ -362,7 +370,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
       if (spotifyArtistId) {
         // Check if we've already added tracks for this exact Spotify ID
         if (processedArtistIds.has(spotifyArtistId)) {
-          logger.info(`Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
+          logger.info(`${logPrefix} Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
           continue;
         }
         // If not, this is a new artist. Add them to our Set.
@@ -385,11 +393,11 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           // Use bestMatch.name for the log since artistName can be slightly different
           const logName = bestMatch ? bestMatch.name : artistName;
           await updateJobLog(jobId, `ARTIST:${logName}`, i, uniqueArtists.length);
-          logger.info(`  -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
+          logger.info(`${logPrefix}   -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
 
           tracksAddedCount += trackUris.length;
         } else {
-          logger.info(`  -> Found artist, but they have no top tracks. Skipping track add.`);
+          logger.info(`${logPrefix}   -> Found artist, but they have no top tracks. Skipping track add.`);
           await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, i, uniqueArtists.length);
         }
       }
@@ -423,30 +431,29 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
             waitReason = `429 rate limit`;
           }
 
-          logger.warn(`Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
+          logger.warn(`${logPrefix} Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
           await sleep(waitMs);
           
           i--; // Rewind the loop to retry
-          logger.info(`Retrying artist "${artistName}"...`);
-
+          logger.info(`${logPrefix} Retrying artist "${artistName}"...`);
         } else {
           // --- We're out of retries. Give up on this artist. ---
-          logger.error(`Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
+          logger.error(`${logPrefix} Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
         }
       } else {
         // It was a different, non-retryable error (like 404, 401)
         // Or a non-axios error. Log it and move on.
-        logger.error(`Error processing artist "${artistName}":`, error.message);
+        logger.error(`${logPrefix} Error processing artist "${artistName}":`, error.message);
       }
     }
   }
 
   await updateJobLog(jobId, "Curation complete!", uniqueArtists.length, uniqueArtists.length);
-  logger.info(`\nCuration complete. Total tracks added to playlist: ${tracksAddedCount}`);
+  logger.info(`${logPrefix} Curation complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
     // We created an empty playlist. This is a "failure".
-    logger.warn(`WORKER: No tracks added for playlist ${playlistId}. Deleting empty playlist...`);
+    logger.warn(`${logPrefix} No tracks added for playlist ${playlistId}. Deleting empty playlist...`);
     try {
       // We must "unfollow" (delete) the playlist from the master account.
       // This is a NEW Spotify API endpoint we are using.
@@ -454,9 +461,9 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         `https://api.spotify.com/v1/playlists/${playlistId}/followers`,
         { headers: { 'Authorization': `Bearer ${accessToken}` } }
       );
-      logger.warn(`WORKER: Successfully deleted empty playlist ${playlistId}.`);
+      logger.warn(`${logPrefix} Successfully deleted empty playlist ${playlistId}.`);
     } catch (deleteError) {
-      logger.error(`WORKER: CRITICAL! Failed to delete empty playlist ${playlistId}.`, deleteError.message);
+      logger.error(`${logPrefix} CRITICAL! Failed to delete empty playlist ${playlistId}.`, deleteError.message);
       // Don't stop, just let it return null.
     }
     
@@ -471,15 +478,16 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
  * Finds one 'pending' job, runs it, and updates the DB.
  * Designed to be called repeatedly by a loop.
  */
-async function processJobQueue() {
+async function processJobQueue(workerId) {
   let job; // declared outside the 'try' so we can use it in 'catch'
-  logger.debug('WORKER (1/7): processJobQueue started.');
+  const logPrefix = `[Worker ${workerId}]`;
+  logger.superDebug(`${logPrefix} (1/7): processJobQueue started.`);
 
   try {
     // find any job that's been "building" for too long
     // (e.g., if the server crashed) and mark it as 'failed'.
     try {
-      logger.debug('WORKER (2/7): Checking for zombie jobs...');
+      logger.superDebug(`${logPrefix} (2/7): Checking for zombie jobs...`);
       const zombieJobs = await sql`
         UPDATE playlist_jobs 
         SET 
@@ -491,16 +499,16 @@ async function processJobQueue() {
       `;
 
       if (zombieJobs.length > 0) {
-        logger.warn(`WORKER: Found and reset ${zombieJobs.length} zombie job(s).`);
+        logger.warn(`${logPrefix} Found and reset ${zombieJobs.length} zombie job(s).`);
       }
-      logger.debug('WORKER (3/7): Zombie check complete.');
+      logger.superDebug(`${logPrefix} (3/7): Zombie check complete.`);
     } catch (reaperError) {
       // If this fails, the DB is probably down. Log it and stop.
-      logger.error('WORKER: CRITICAL! Zombie reaper FAILED:', reaperError.message);
+      logger.error(`${logPrefix} CRITICAL! Zombie reaper FAILED:`, reaperError.message);
       return; // Stop the worker run
     }
 
-    logger.debug('WORKER (4/7): Looking for a pending job...');
+    logger.superDebug(`${logPrefix} (4/7): Looking for a pending job...`);
     // Find and "Lock" a Job
     // Find a pending job and update its status
     // This prevents two workers from accidentally grabbing the same job.
@@ -533,13 +541,12 @@ async function processJobQueue() {
     });
 
     if (!job) {
-      logger.debug('WORKER (5/7): No pending jobs found.');
-      logger.debug('WORKER: No pending jobs found.');
+      logger.superDebug(`${logPrefix} (5/7): No pending jobs found.`);
       return; // No jobs to do, so just stop here.
     }
 
     // Process the Job
-    logger.info(`WORKER (6/7): Picked up job ${job.id}. Calling runCurationLogic on "${job.search_city}" on ${job.search_date}`);
+    logger.info(`${logPrefix} (6/7): Picked up job ${job.id}. Calling runCurationLogic on "${job.search_city}" on ${job.search_date}`);
     
     const accessToken = await getMasterAccessToken();
 
@@ -552,11 +559,12 @@ async function processJobQueue() {
       accessToken,
       job.latitude,
       job.longitude,
-      job.excluded_genres
+      job.excluded_genres,
+      workerId
     );
 
     // Handle Success
-    logger.info(`WORKER (7/7): Curation logic complete for job ${job.id}. PlaylistID: ${playlistId}`);
+    logger.info(`${logPrefix} (7/7): Curation logic complete for job ${job.id}. PlaylistID: ${playlistId}`);
     if (playlistId) {
     await sql`
       UPDATE playlist_jobs 
@@ -564,7 +572,7 @@ async function processJobQueue() {
       WHERE id = ${job.id};
     `;
     } else {
-      logger.warn(`WORKER: Job ${job.id} found no artists. Marking as 'failed'.`);
+      logger.warn(`${logPrefix} Job ${job.id} found no artists. Marking as 'failed'.`);
       await sql`
         UPDATE playlist_jobs 
         SET status = 'failed', error_message = 'No artists were found for this city and date.'
@@ -574,7 +582,7 @@ async function processJobQueue() {
 
   } catch (error) {
     // Handle Failure
-    logger.error(`WORKER: CRITICAL FAILURE for job ${job ? job.id : 'unknown'}. Full Error:`, error);
+    logger.error(`${logPrefix} CRITICAL FAILURE for job ${job ? job.id : 'unknown'}. Full Error:`, error);
     if (job) {
       // We are already in a failed state.
       // If we can't log the error to the DB just don't crash.
@@ -586,11 +594,11 @@ async function processJobQueue() {
             error_message = ${error.message}
           WHERE id = ${job.id};
         `;
-        logger.info(`WORKER: Successfully logged failure for job ${job.id} to DB.`);
+        logger.info(`${logPrefix} Successfully logged failure for job ${job.id} to DB.`);
       } catch (dbError) {
-        logger.error(`WORKER: CRITICAL! FAILED TO LOG FAILURE for job ${job.id}. DB connection is down.`);
-        logger.error('Original error:', error.message);
-        logger.error('DB log error:', dbError.message);
+        logger.error(`${logPrefix} CRITICAL! FAILED TO LOG FAILURE for job ${job.id}. DB connection is down.`);
+        logger.error(`${logPrefix} Original error:`, error.message);
+        logger.error(`${logPrefix} DB log error:`, dbError.message);
       }
     }
   }
@@ -843,14 +851,16 @@ app.get('/api/playlists', async (req, res) => {
         latitude,
         longitude,
         number_of_songs,
-        excluded_genres
+        excluded_genres,
+        updated_at
       ) VALUES (
         ${city},
         ${date},
         ${latitude},
         ${longitude},
         ${number_of_songs},
-        ${genresArray}
+        ${genresArray},
+        NOW()
       )
       RETURNING id;
     `;
@@ -921,7 +931,8 @@ app.get('/api/playlists/status', async (req, res) => {
  * Starts the queue processing when the server boots.
  */
 function startWorker() {
-  logger.info('Worker loop starting... Will check for jobs every 10 seconds.');
+  const CONCURRENT_WORKERS = 4; // <--- NEW: Parallelism Config
+  logger.info(`Starting ${CONCURRENT_WORKERS} concurrent worker loops...`);
 
   // If the server just restarted, any job marked 'building' is actually dead.
   // We mark them failed so the UI doesn't get stuck on them.
@@ -933,35 +944,41 @@ function startWorker() {
         WHERE status = 'building';
       `;
       if (result.count > 0) {
-        logger.warn(`[STARTUP] Cleaned up ${result.count} zombie job(s) left in 'building' state.`);
+        logger.warn(`[ZOMBIE HUNTER] Cleaned up ${result.count} zombie job(s) left in 'building' state.`);
       }
     } catch (err) {
-      logger.error('[STARTUP] Failed to clean zombie jobs:', err);
+      logger.error('[ZOMBIE HUNTER] Failed to clean zombie jobs:', err);
     }
   })();
   
-  // This lock prevents our worker from "overlapping"
-  // if a single job takes longer than 10s to run.
-  let isWorkerRunning = false;
+  // --- Spawn Workers ---
+  for (let i = 1; i <= CONCURRENT_WORKERS; i++) {
+    const workerId = i;
+    // We offset the start times slightly (2s, 4s, 6s, 8s) to prevent 
+    // all 4 hitting the DB at the exact same millisecond on boot.
+    setTimeout(() => {
+      logger.info(`[Worker ${workerId}] Loop starting...`);
+      
+      let isRunning = false;
+      
+      const runLoop = async () => {
+        if (isRunning) return; 
+        isRunning = true;
+        try {
+          await processJobQueue(workerId); // Pass ID to queue
+        } catch (err) {
+          logger.error(`[Worker ${workerId}] Loop crashed:`, err);
+        } finally {
+          isRunning = false;
+        }
+      };
 
-  const runWorker = async () => {
-    if (isWorkerRunning) {
-      logger.debug('Worker is already running. Skipping this interval.');
-      return;
-    }
-    
-    isWorkerRunning = true;
-    logger.debug('Worker checking for jobs...');
-    try {
-      await processJobQueue();
-    } catch (err) {
-      logger.error('Unhandled critical error in worker loop:', err);
-    } finally {
-      isWorkerRunning = false;
-    }
-  };
+      // Run immediately, then every 10 seconds
+      runLoop();
+      setInterval(runLoop, 10000);
 
-  setInterval(runWorker, 10000);
+    }, i * 2000); 
+  }
 }
 
 startWorker();
