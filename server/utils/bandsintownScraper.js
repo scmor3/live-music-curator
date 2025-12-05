@@ -25,6 +25,22 @@ function formatDateForBandsintown(dateStr) {
   const formattedDate = `${dateStr}T00:00:00,${dateStr}T23:00:00`;
   return formattedDate;
 }
+
+/**
+ * Helper to normalize event data from raw API response.
+ * Extracts rich metadata including time, timezone, and ticket links.
+ */
+function normalizeEvent(rawEvent) {
+  return {
+    name: rawEvent.artistName,
+    venue: rawEvent.venueName,
+    date: rawEvent.startsAt, 
+    timezone: rawEvent.timezone,
+    url: rawEvent.callToActionRedirectUrl || rawEvent.eventUrl,
+    image: rawEvent.artistImageSrc
+  };
+}
+
 /**
  * MAIN CONTROLLER
  * Scrapes all artist names for a given date and location by paginating an API.
@@ -176,9 +192,11 @@ async function scrapeWithGot(dateStr, latitude, longitude, sessionId, workerId) 
 
     if (events.length === 0) break;
 
-    const artistsOnPage = events.map(event => event.artistName);
-    allArtistNames.push(...artistsOnPage);
+    const normalizedEvents = events.map(normalizeEvent);
+    allArtistNames.push(...normalizedEvents);
 
+    if (ENABLE_DEBUG) console.log(`${logPrefix} [PAGE ${pageNum}] Found ${normalizedEvents.length} events.`);
+    
     if (!data.urlForNextPageOfEvents) break;
 
     pageNum++;
@@ -332,10 +350,10 @@ async function scrapeWithPlaywright(dateStr, latitude, longitude, sessionId, wor
         break;
       }
 
-      const artistsOnPage = events.map(event => event.artistName);
-      allArtistNames.push(...artistsOnPage);
-
-      if (ENABLE_DEBUG) console.log(`${logPrefix} [PAGE ${pageNum}] Found ${artistsOnPage.length} artists.`);
+      const normalizedEvents = events.map(normalizeEvent);
+      allArtistNames.push(...normalizedEvents);
+      
+      if (ENABLE_DEBUG) console.log(`${logPrefix} [PAGE ${pageNum}] Found ${normalizedEvents.length} events.`);
 
       // EXIT CONDITION 2: API says no next page
       if (!data.urlForNextPageOfEvents) {
