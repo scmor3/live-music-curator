@@ -190,6 +190,19 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
   const rawEventsList = await scrapeBandsintown(date, latitude, longitude, workerId);
+
+  // --- DEBUG LOG START ---
+  if (rawEventsList && rawEventsList.length > 0) {
+    const sample = rawEventsList[0];
+    logger.warn(`${logPrefix} [DEBUG] Scraper returned ${rawEventsList.length} items.`);
+    logger.warn(`${logPrefix} [DEBUG] Sample Item 0: ${JSON.stringify(sample)}`);
+    // Check if image exists
+    if (!sample.image) logger.error(`${logPrefix} [CRITICAL] Scraper returned object WITHOUT image property!`);
+  } else {
+    logger.error(`${logPrefix} [CRITICAL] Scraper returned EMPTY list.`);
+  }
+  // --- DEBUG LOG END ---
+
   // Check if we found any artists.
   if (!rawEventsList || rawEventsList.length === 0) {
     logger.info(`${logPrefix} No artists found for "${city}" on ${date}.`);
@@ -243,7 +256,25 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // Convert map back to array of event objects
   const uniqueEvents = Array.from(uniqueEventsMap.values());
 
-  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists.`, 0, uniqueEvents.length);
+// --- DEBUG LOG START ---
+  logger.warn(`${logPrefix} [DEBUG] Saving ${uniqueEvents.length} unique events to DB.`);
+  if (uniqueEvents.length > 0) {
+     logger.warn(`${logPrefix} [DEBUG] First unique event to save: ${JSON.stringify(uniqueEvents[0])}`);
+  }
+  // --- DEBUG LOG END ---
+
+  // Save the de-duplicated list back to the DB (early for frontend use)
+  try {
+    await sql`
+      UPDATE playlist_jobs 
+      SET events_data = ${sql.json(uniqueEvents)}
+      WHERE id = ${jobId};
+    `;
+  } catch (saveErr) {
+    logger.warn(`${logPrefix} Failed to save initial events data: ${saveErr.message}`);
+  }
+
+  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${date}.`, 0, uniqueEvents.length);
   logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated to ${uniqueEvents.length} unique artists.`);
 
   // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueEvents.length} unique artists...`, 0, uniqueEvents.length);
@@ -347,7 +378,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           }
         }
         
-        const SIMILARITY_THRESHOLD = 3;
+        const SIMILARITY_THRESHOLD = 1;
         if (closestMatch && minDistance <= SIMILARITY_THRESHOLD) {
           // Found a close enough match
           bestMatch = closestMatch;
@@ -403,7 +434,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
             axiosConfig
           );
           // Use bestMatch.name for the log since artistName can be slightly different
-          const logName = bestMatch ? bestMatch.name : artistName;
+          const logName = artistName;
           await updateJobLog(jobId, `ARTIST:${logName}`, i, uniqueEvents.length);
           logger.info(`${logPrefix}   -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
 
@@ -460,7 +491,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
   }
 
-  await updateJobLog(jobId, "Curation complete!", uniqueEvents.length, uniqueEvents.length);
+  await updateJobLog(jobId, `Curation complete for ${city} on ${date}`, uniqueEvents.length, uniqueEvents.length);
   logger.info(`${logPrefix} Curation complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {

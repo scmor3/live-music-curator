@@ -14,6 +14,8 @@ type LiveActivityFeedProps = {
   playlistId?: string;
   errorMessage?: string;
   events?: any[];
+  cityName?: string;
+  dateStr?: string;
   onReset: () => void;
 };
 
@@ -24,6 +26,8 @@ export default function LiveActivityFeed({
   playlistId, 
   errorMessage,
   events = [],
+  cityName = 'Unknown City',
+  dateStr = 'Unknown Date',
   onReset
 }: LiveActivityFeedProps) {
   
@@ -140,15 +144,38 @@ export default function LiveActivityFeed({
   const isComplete = status === 'complete' && !!playlistId;
   const isFailed = status === 'failed' || !!errorMessage;
 
-  // Helper to find event by artist name
+  // Helper to find event by artist name (with fuzzy fallback)
   const getEventForLog = (artistName: string) => {
-      if (!events || events.length === 0) return null;
-      const cleanName = artistName.toLowerCase().trim();
-      return events.find((e: any) => e.name.toLowerCase().trim() === cleanName);
-    };
+    if (!events || events.length === 0) return null;
+    const cleanName = artistName.toLowerCase().trim();
+    
+    // 1. Try Exact Match
+    const exact = events.find((e: any) => e.name.toLowerCase().trim() === cleanName);
+    if (exact) return exact;
+
+    // 2. Try Fuzzy Match (Contains)
+    // This catches "Rick Trevino" matching "Rick Trevino (Official)"
+    const fuzzy = events.find((e: any) => {
+      const eventName = e.name.toLowerCase().trim();
+      return eventName.includes(cleanName) || cleanName.includes(eventName);
+    });
+    
+    return fuzzy;
+  };
+
+  // --- HELPER: Format Time ---
+  const formatTime = (isoDate: string) => {
+    try {
+      if (!isoDate) return '';
+      const date = new Date(isoDate);
+      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } catch (e) {
+      return '';
+    }
+  };
 
   return (
-    <div className="w-full max-w-lg bg-zinc-900 rounded-2xl shadow-2xl overflow-hidden border border-zinc-800 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="w-full max-w-lg bg-zinc-900 rounded-2xl shadow-2xl overflow-hidden border border-zinc-800 animate-in fade-in slide-in-from-bottom-4 duration-500 h-[80vh] flex flex-col">
       
       {/* --- HEADER --- */}
       <div className={`p-4 sm:p-6 pb-8 text-center relative transition-colors duration-700 ${
@@ -209,7 +236,7 @@ export default function LiveActivityFeed({
       {/* --- LOG BODY --- */}
       <div 
         ref={scrollContainerRef}
-        className="h-80 overflow-y-auto bg-zinc-900 p-4 scroll-smooth relative"
+        className="flex-1 overflow-y-auto bg-zinc-900 p-4 scroll-smooth relative"
       >
         {visibleLogs.length === 0 && !isFailed && (
           <div className="h-full flex flex-col items-center justify-center opacity-50">
@@ -218,7 +245,7 @@ export default function LiveActivityFeed({
           </div>
         )}
 
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4">
           {visibleLogs.map((log, index) => {
             let type = 'info';
             let text = log;
@@ -246,67 +273,87 @@ export default function LiveActivityFeed({
               <div 
                 key={index} 
                 className={`
-                  flex items-center gap-3 p-2 rounded-lg border transition-all duration-200
+                  flex items-center gap-2 p-2 rounded-lg border transition-all duration-200
                   ${hasLink ? 'hover:bg-zinc-800 active:bg-zinc-800 active:scale-[0.98] cursor-pointer group border-transparent' : 'border-zinc-800/50 bg-zinc-900/50'}
                   animate-in slide-in-from-bottom-2 duration-300
                 `}
                 onClick={() => {
                   if (hasLink) window.open(eventData.url, '_blank');
                 }}
+                role={hasLink ? "button" : undefined}
               >
                 {/* --- AVATAR / ICON COLUMN --- */}
-                <div className="flex-shrink-0 relative w-10 h-10">
-                  {eventData && eventData.image ? (
-                    <img 
-                      src={eventData.image} 
-                      alt={text}
-                      className={`w-full h-full rounded-full object-cover border border-zinc-700 transition-colors ${
-                        hasLink ? 'group-hover:border-amber-500' : ''
-                      }`}
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                        (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
-                      }}
-                    />
-                  ) : type === 'success' ? (
-                    <div className="w-full h-full flex items-center justify-center bg-zinc-800 rounded-full border border-zinc-700">
-                      <MusicalNoteIcon className="w-5 h-5 text-green-400" />
+                {type !== 'info' && (
+                  <div className="flex-shrink-0 relative w-10 h-10">
+                    {eventData && eventData.image ? (
+                      <img 
+                        src={eventData.image} 
+                        alt={text}
+                        className={`w-full h-full rounded-full object-cover border border-zinc-700 transition-colors ${
+                          hasLink ? 'group-hover:border-amber-500' : ''
+                        } ${type === 'skipped' ? 'grayscale opacity-70' : ''}`}
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                          (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                        }}
+                      />
+                    ) : type === 'success' ? (
+                      <div className="w-full h-full flex items-center justify-center bg-zinc-800 rounded-full border border-zinc-700">
+                        <MusicalNoteIcon className="w-5 h-5 text-green-400" />
+                      </div>
+                    ) : type === 'skipped' ? (
+                      <div className="w-full h-full flex items-center justify-center bg-zinc-800/50 rounded-full border border-zinc-700/50">
+                        <span className="text-sm font-bold text-zinc-600">?</span>
+                      </div>
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <InformationCircleIcon className="w-5 h-5 text-zinc-500" />
+                      </div>
+                    )}
+                    
+                    {/* Fallback Icon (Hidden by default) */}
+                    <div className="hidden absolute inset-0 bg-zinc-800 rounded-full flex items-center justify-center border border-zinc-700">
+                      <MusicalNoteIcon className="w-5 h-5 text-zinc-500" />
                     </div>
-                  ) : type === 'skipped' ? (
-                    <div className="w-full h-full flex items-center justify-center bg-zinc-800/50 rounded-full border border-zinc-700/50">
-                      <span className="text-sm font-bold text-zinc-600">?</span>
-                    </div>
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <InformationCircleIcon className="w-5 h-5 text-zinc-500" />
-                    </div>
-                  )}
-                  
-                  {/* Fallback Icon (Hidden by default) */}
-                  <div className="hidden absolute inset-0 bg-zinc-800 rounded-full flex items-center justify-center border border-zinc-700">
-                     <MusicalNoteIcon className="w-5 h-5 text-zinc-500" />
                   </div>
-                </div>
+                )}
 
                 {/* --- TEXT COLUMN --- */}
                 <div className="flex-1 min-w-0 flex flex-col justify-center">
-                  <span className={`font-medium text-base truncate leading-snug ${
-                    type === 'success' ? 'text-stone-200' : 
-                    type === 'skipped' ? 'text-zinc-500' : 'text-blue-200 italic'
-                  }`}>
+                  <span className={`
+                    font-bold text-lg leading-snug w-full
+                    ${type === 'info' ? 'text-blue-200 whitespace-normal italic text-sm' : 'truncate'}
+                    ${type === 'success' ? 'text-stone-100' : ''}
+                    ${type === 'skipped' ? 'text-zinc-400' : ''}
+                  `}>
                     {text}
                   </span>
                   
                   {/* Subtext Logic */}
-                  {type === 'skipped' ? (
-                    <p className="text-xs text-red-400/80 mt-0.5 font-medium">
-                      {subText}
-                    </p>
-                  ) : type === 'success' && eventData && eventData.venue ? (
-                     <p className="text-xs text-zinc-500 truncate group-hover:text-amber-500/80 transition-colors mt-0.5">
-                       @ {eventData.venue}
-                     </p>
-                  ) : null}
+                  {eventData && (
+                    <div className="flex flex-col items-center w-full mt-1">
+                      {/* Venue & Time Line (Centered) */}
+                      <div className="flex items-center justify-center gap-2 text-xs text-zinc-500 w-full truncate">
+                        {eventData.date && (
+                          <span className="text-amber-600 font-mono tracking-tighter">
+                            {formatTime(eventData.date)}
+                          </span>
+                        )}
+                        {eventData.venue && (
+                          <span className="truncate max-w-[150px]">
+                            @ {eventData.venue}
+                          </span>
+                        )}
+                      </div>
+                      
+                      {/* Explicit "Not Found" label for skipped items */}
+                      {type === 'skipped' && (
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-red-400/80 mt-1">
+                          Tracks Not Found
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* --- CHEVRON (Mobile Affordance) --- */}

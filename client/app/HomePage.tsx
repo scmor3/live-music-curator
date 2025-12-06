@@ -156,9 +156,19 @@ export default function HomePage() {
 
       const data = await response.json();
 
+      // --- DEBUG LOG ---
+      if (data.events && data.events.length > 0) {
+         console.log(`Frontend received ${data.events.length} events! First:`, data.events[0]);
+      }
+      // -----------------
+
       // Always update logs and progress if they exist
       if (data.logs) setLogs(data.logs);
       if (data.progress) setProgress(data.progress);
+
+      if (data.events && data.events.length > 0) {
+        setEvents(data.events);
+      }
 
       switch (data.status) {
         case 'pending':
@@ -175,22 +185,19 @@ export default function HomePage() {
           if (data.playlistId) {
             // We got a playlist! Show the success link.
             setPlaylistId(data.playlistId);
-            if (data.events) {
-              setEvents(data.events);
-            }
           } else {
             // We got a 'null' playlist, which means no artists were found.
             // This is a "success" from the worker, but an "error" for the user.
             setError('Garsh dangit!\nNo artists were found for this city and date.');
           }
           break;
-        case 'failed':
-          // --- FAILED! ---
-          // setJobId(''); // Clear the job ID
-          setIsLoading(false); // Stop loading
-          setError(data.error || 'The job failed for an unknown reason.');
-          setPollingStatusMessage(''); // Clear the status
-          break;
+          case 'failed':
+            // --- FAILED! ---
+            // setJobId(''); // Clear the job ID
+            setIsLoading(false); // Stop loading
+            setError(data.error || 'The job failed for an unknown reason.');
+            setPollingStatusMessage(''); // Clear the status
+            break;
       }
     } catch (err) {
       console.error('Error during polling:', err);
@@ -356,12 +363,18 @@ export default function HomePage() {
       
       {/* --- Centered "card" with a color flush with background --- */}
       <div className="p-8 w-full max-w-lg text-center">
+        
+        {/* 1. HIDE HEADER WHEN RUNNING */}
+        {!jobId && (
+          <>
+            {/* --- Content with warm, light text colors --- */}
+            <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Curator</h1>
+            <p className="text-black mb-6">
+              Enter a city and date to create a playlist of artists playing shows today, tomorrow, or whenever!
+            </p>
+          </>
+        )}
 
-        {/* --- Content with warm, light text colors --- */}
-        <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Fix</h1>
-        <p className="text-black mb-6">
-          Enter a city and date to create a playlist of artists playing shows today, tomorrow, or whenever!
-        </p>
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-4 mt-4 w-full">
 
@@ -377,7 +390,11 @@ export default function HomePage() {
               totalCount={progress.total}
               playlistId={playlistId}
               errorMessage={error}
+              events={events}
+              cityName={selectedCity?.name || 'Unknown City'}
+              dateStr={date}
               onReset={handleStartOver}
+
             />
             {/* 2. The Cancel Button (Only show if NOT done) */}
             {!playlistId && !error && (
