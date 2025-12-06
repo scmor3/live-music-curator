@@ -189,11 +189,24 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   const logPrefix = `[Worker ${workerId}]`;
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
-  const rawArtistList = await scrapeBandsintown(date, latitude, longitude, workerId);
+  const rawEventsList = await scrapeBandsintown(date, latitude, longitude, workerId);
+
+  // --- DEBUG LOG START ---
+  if (rawEventsList && rawEventsList.length > 0) {
+    const sample = rawEventsList[0];
+    logger.warn(`${logPrefix} [DEBUG] Scraper returned ${rawEventsList.length} items.`);
+    logger.warn(`${logPrefix} [DEBUG] Sample Item 0: ${JSON.stringify(sample)}`);
+    // Check if image exists
+    if (!sample.image) logger.error(`${logPrefix} [CRITICAL] Scraper returned object WITHOUT image property!`);
+  } else {
+    logger.error(`${logPrefix} [CRITICAL] Scraper returned EMPTY list.`);
+  }
+  // --- DEBUG LOG END ---
+
   // Check if we found any artists.
-  if (!rawArtistList || rawArtistList.length === 0) {
+  if (!rawEventsList || rawEventsList.length === 0) {
     logger.info(`${logPrefix} No artists found for "${city}" on ${date}.`);
-    return { playlistId: null };
+    return { playlistId: null, events: [] };
   }
 
   // await updateJobLog(jobId, `Scout returned! Found ${rawArtistList.length} artists.`, 0, rawArtistList.length);
@@ -228,14 +241,43 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   const playlistId = createPlaylistResponse.data.id;
   logger.info(`${logPrefix} Successfully created new playlist with ID: ${playlistId}`);
 
-  // De-duplicate the list - normalize to lowercase to catch simple duplicates
-  const lowercasedArtists = rawArtistList.map(name => name.toLowerCase().trim());
-  const uniqueArtists = [...new Set(lowercasedArtists)];
+  // --- Deduplication Logic for Objects ---
+  // We need to deduplicate by Artist Name, but keep the event object.
+  const uniqueEventsMap = new Map();
 
-  await updateJobLog(jobId, `Found ${uniqueArtists.length} artists.`, 0, uniqueArtists.length);
-  logger.info(`${logPrefix} Found ${rawArtistList.length} total artists, de-duplicated to ${uniqueArtists.length} unique artists.`);
+  rawEventsList.forEach(event => {
+    // Normalize name for key (lowercase, trimmed)
+    const key = event.name.toLowerCase().trim();
+    if (!uniqueEventsMap.has(key)) {
+      uniqueEventsMap.set(key, event);
+    }
+  });
 
-  // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueArtists.length} unique artists...`, 0, uniqueArtists.length);
+  // Convert map back to array of event objects
+  const uniqueEvents = Array.from(uniqueEventsMap.values());
+
+// --- DEBUG LOG START ---
+  logger.warn(`${logPrefix} [DEBUG] Saving ${uniqueEvents.length} unique events to DB.`);
+  if (uniqueEvents.length > 0) {
+     logger.warn(`${logPrefix} [DEBUG] First unique event to save: ${JSON.stringify(uniqueEvents[0])}`);
+  }
+  // --- DEBUG LOG END ---
+
+  // Save the de-duplicated list back to the DB (early for frontend use)
+  try {
+    await sql`
+      UPDATE playlist_jobs 
+      SET events_data = ${sql.json(uniqueEvents)}
+      WHERE id = ${jobId};
+    `;
+  } catch (saveErr) {
+    logger.warn(`${logPrefix} Failed to save initial events data: ${saveErr.message}`);
+  }
+
+  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${date}.`, 0, uniqueEvents.length);
+  logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated to ${uniqueEvents.length} unique artists.`);
+
+  // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueEvents.length} unique artists...`, 0, uniqueEvents.length);
 
   // --- SYNONYM MAP ---
   const genreSynonymMap = {
@@ -277,9 +319,10 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // track total number of tracks added to see if we added any at all
   let tracksAddedCount = 0;
 
-  // Loop through each artist and process
-  for (let i = 0; i < uniqueArtists.length; i++) {
-    const artistName = uniqueArtists[i];
+  // --- Loop over uniqueEvents objects ---
+  for (let i = 0; i < uniqueEvents.length; i++) {
+    const eventObj = uniqueEvents[i];
+    const artistName = eventObj.name; // Extract string name for Spotify search
 
     // Log memory usage every 5 artists
     if (i % 5 === 0) {
@@ -288,11 +331,11 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
       const heapUsedMB = Math.round(memoryUsage.heapUsed / 1024 / 1024 * 100) / 100;
       const rssMB = Math.round(memoryUsage.rss / 1024 / 1024 * 100) / 100;
       
-      logger.debug(`${logPrefix} [MEMORY] Artist ${i}/${uniqueArtists.length} - Heap: ${heapUsedMB} MB | RSS: ${rssMB} MB`);
+      logger.debug(`${logPrefix} [MEMORY] Artist ${i}/${uniqueEvents.length} - Heap: ${heapUsedMB} MB | RSS: ${rssMB} MB`);
     }
     
-    // await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueArtists.length);
-    logger.info(`${logPrefix} [${i + 1}/${uniqueArtists.length}] Processing artist: "${artistName}"`);
+    // await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueEvents.length);
+    logger.info(`${logPrefix} [${i + 1}/${uniqueEvents.length}] Processing artist: "${artistName}"`);
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -303,7 +346,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
         logger.info(`${logPrefix}   -> No Spotify results for "${artistName}".`);
-        await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueArtists.length);
+        await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueEvents.length);
         continue;
       }
 
@@ -335,7 +378,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           }
         }
         
-        const SIMILARITY_THRESHOLD = 3;
+        const SIMILARITY_THRESHOLD = 1;
         if (closestMatch && minDistance <= SIMILARITY_THRESHOLD) {
           // Found a close enough match
           bestMatch = closestMatch;
@@ -344,7 +387,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         } else {
           // No good match found
           logger.warn(`${logPrefix} No close match for "${artistName}". Skipping.`);
-          await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueArtists.length);
+          await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, uniqueEvents.length);
         }
       }
 
@@ -361,7 +404,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           // This artist MATCHES the exclusion list, so we SKIP them.
           // await updateJobLog(jobId, `  -> Skipped "${bestMatch.name}" (Genre: ${bestMatch.genres[0]})`);
           logger.info(`${logPrefix}   -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
-          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (Genre: ${bestMatch.genres[0]})`, i, uniqueArtists.length);
+          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (Genre: ${bestMatch.genres[0]})`, i, uniqueEvents.length);
           spotifyArtistId = null; // Set to null to skip track-adding
         }
     }
@@ -391,14 +434,14 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
             axiosConfig
           );
           // Use bestMatch.name for the log since artistName can be slightly different
-          const logName = bestMatch ? bestMatch.name : artistName;
-          await updateJobLog(jobId, `ARTIST:${logName}`, i, uniqueArtists.length);
+          const logName = artistName;
+          await updateJobLog(jobId, `ARTIST:${logName}`, i, uniqueEvents.length);
           logger.info(`${logPrefix}   -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
 
           tracksAddedCount += trackUris.length;
         } else {
           logger.info(`${logPrefix}   -> Found artist, but they have no top tracks. Skipping track add.`);
-          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, i, uniqueArtists.length);
+          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, i, uniqueEvents.length);
         }
       }
     } catch (error) {
@@ -448,7 +491,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
   }
 
-  await updateJobLog(jobId, "Curation complete!", uniqueArtists.length, uniqueArtists.length);
+  await updateJobLog(jobId, `Curation complete for ${city} on ${date}`, uniqueEvents.length, uniqueEvents.length);
   logger.info(`${logPrefix} Curation complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
@@ -468,9 +511,9 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
     
     // Return null, which our worker will see as a failure.
-    return { playlistId: null };
+    return { playlistId: null, events: [] };
   }
-  return { playlistId };
+  return { playlistId, events: uniqueEvents };
 
 }
 
@@ -551,7 +594,7 @@ async function processJobQueue(workerId) {
     const accessToken = await getMasterAccessToken();
 
     // Run our curation logic with the job's data
-    const { playlistId } = await runCurationLogic(
+    const { playlistId, events } = await runCurationLogic(
       job.id,
       job.search_city,
       job.search_date,
@@ -568,7 +611,11 @@ async function processJobQueue(workerId) {
     if (playlistId) {
     await sql`
       UPDATE playlist_jobs 
-      SET status = 'complete', playlist_id = ${playlistId}
+      SET
+        status = 'complete',
+        playlist_id = ${playlistId},
+        events_data = ${sql.json(events)},
+        updated_at = NOW()
       WHERE id = ${job.id};
     `;
     } else {
@@ -894,9 +941,10 @@ app.get('/api/playlists/status', async (req, res) => {
         status, 
         playlist_id, 
         error_message, 
-        log_history,       -- New column
-        total_artists,     -- New column
-        processed_artists  -- New column
+        log_history,
+        total_artists,
+        processed_artists,
+        events_data
       FROM playlist_jobs 
       WHERE id = ${jobId};
     `;
@@ -915,9 +963,10 @@ app.get('/api/playlists/status', async (req, res) => {
       error: job.error_message,
       logs: job.log_history || [],
       progress: {
-      total: job.total_artists || 0,
-      current: job.processed_artists || 0
-      }
+        total: job.total_artists || 0,
+        current: job.processed_artists || 0
+      },
+      events: job.events_data || []
     });
 
   } catch (error) {

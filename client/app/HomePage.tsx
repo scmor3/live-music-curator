@@ -37,6 +37,7 @@ export default function HomePage() {
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   
+  const [events, setEvents] = useState<any[]>([]);
 
   // --- TIMEZONE-SAFE DATE LOGIC ---
   // Helper function to pad numbers (e.g., 9 -> "09")
@@ -155,9 +156,19 @@ export default function HomePage() {
 
       const data = await response.json();
 
+      // --- DEBUG LOG ---
+      if (data.events && data.events.length > 0) {
+         console.log(`Frontend received ${data.events.length} events! First:`, data.events[0]);
+      }
+      // -----------------
+
       // Always update logs and progress if they exist
       if (data.logs) setLogs(data.logs);
       if (data.progress) setProgress(data.progress);
+
+      if (data.events && data.events.length > 0) {
+        setEvents(data.events);
+      }
 
       switch (data.status) {
         case 'pending':
@@ -173,20 +184,20 @@ export default function HomePage() {
           setPollingStatusMessage('complete');
           if (data.playlistId) {
             // We got a playlist! Show the success link.
-            setPlaylistId(data.playlistId); 
+            setPlaylistId(data.playlistId);
           } else {
             // We got a 'null' playlist, which means no artists were found.
             // This is a "success" from the worker, but an "error" for the user.
             setError('Garsh dangit!\nNo artists were found for this city and date.');
           }
           break;
-        case 'failed':
-          // --- FAILED! ---
-          // setJobId(''); // Clear the job ID
-          setIsLoading(false); // Stop loading
-          setError(data.error || 'The job failed for an unknown reason.');
-          setPollingStatusMessage(''); // Clear the status
-          break;
+          case 'failed':
+            // --- FAILED! ---
+            // setJobId(''); // Clear the job ID
+            setIsLoading(false); // Stop loading
+            setError(data.error || 'The job failed for an unknown reason.');
+            setPollingStatusMessage(''); // Clear the status
+            break;
       }
     } catch (err) {
       console.error('Error during polling:', err);
@@ -342,6 +353,7 @@ export default function HomePage() {
     setProgress({ current: 0, total: 0 });
     setPollingStatusMessage('');
     setError('');
+    setEvents([]);
     // We don't clear the form inputs (city/date) so they can easily tweak them!
   };
 
@@ -351,18 +363,26 @@ export default function HomePage() {
       
       {/* --- Centered "card" with a color flush with background --- */}
       <div className="p-8 w-full max-w-lg text-center">
+        
+        {/* 1. HIDE HEADER WHEN RUNNING */}
+        {!jobId && (
+          <>
+            {/* --- Content with warm, light text colors --- */}
+            <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Curator</h1>
+            <p className="text-black mb-6">
+              Enter a city and date to create a playlist of artists playing shows today, tomorrow, or whenever!
+            </p>
+          </>
+        )}
 
-        {/* --- Content with warm, light text colors --- */}
-        <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Fix</h1>
-        <p className="text-black mb-6">
-          Enter a city and date to create a playlist of artists playing shows today, tomorrow, or whenever!
-        </p>
         {/* --- Form layout wrapper --- */}
         <div className="flex flex-col items-center gap-4 mt-4 w-full">
 
           {jobId ? (
             /* MODE A: If a job is running, show the Notebook/Feed */
             <div className="flex flex-col items-center w-full gap-4">
+
+            {/* 1. The Notebook & Progress Bar */}
             <LiveActivityFeed 
               status={pollingStatusMessage}
               // If logs are empty but job is running, pass empty array (The child handles the "Hype Cycle" now)
@@ -370,9 +390,13 @@ export default function HomePage() {
               totalCount={progress.total}
               playlistId={playlistId}
               errorMessage={error}
+              events={events}
+              cityName={selectedCity?.name || 'Unknown City'}
+              dateStr={date}
               onReset={handleStartOver}
+
             />
-            {/* NEW: Emergency Exit Button */}
+            {/* 2. The Cancel Button (Only show if NOT done) */}
             {!playlistId && !error && (
               <button 
                 onClick={handleStartOver}
@@ -381,6 +405,7 @@ export default function HomePage() {
                 Cancel Curation
               </button>
             )}
+
           </div>
           ) : (
             /* MODE B: If idle, show the inputs (Wrapped in a Fragment <>) */
