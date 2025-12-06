@@ -175,7 +175,7 @@ export default function LiveActivityFeed({
   };
 
   return (
-    <div className="w-full max-w-lg bg-zinc-900 rounded-2xl shadow-2xl overflow-hidden border border-zinc-800 animate-in fade-in slide-in-from-bottom-4 duration-500 h-[80vh] flex flex-col">
+    <div className="w-full max-w-lg bg-zinc-900 rounded-2xl shadow-2xl overflow-hidden border border-zinc-800 animate-in fade-in slide-in-from-bottom-4 duration-500 h-[75vh] flex flex-col">
       
       {/* --- HEADER --- */}
       <div className={`p-4 sm:p-6 pb-8 text-center relative transition-colors duration-700 ${
