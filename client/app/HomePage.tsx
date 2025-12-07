@@ -22,6 +22,9 @@ export default function HomePage() {
   const [excludedGenres, setExcludedGenres] = useState<string[]>([]); // Holds the selected genres
   const [showGenres, setShowGenres] = useState(false);
   
+  // State for time filter (Default 0 = "Any Time")
+  const [minStartTime, setMinStartTime] = useState('0');
+
   const [date, setDate] = useState('');
   
   // We need state variables to track the API call
@@ -285,6 +288,7 @@ export default function HomePage() {
     console.log('Button clicked!');
     console.log('User selected city:', selectedCity.name);
     console.log('User selected date:', date);
+    console.log('User selected time filter:', minStartTime);
 
     // --- Start the API Call ---
     setIsLoading(true); // Show loading spinner
@@ -298,7 +302,8 @@ export default function HomePage() {
         city: selectedCity.name,
         date: date,
         lat: selectedCity.latitude.toString(), // Convert number to string for URL
-        lon: selectedCity.longitude.toString()  // Convert number to string for URL
+        lon: selectedCity.longitude.toString(),  // Convert number to string for URL
+        minStartTime: minStartTime
       });
 
       // If the user has selected any genres...
@@ -464,6 +469,26 @@ export default function HomePage() {
             />
           </div>
           {/* --- END: Date Picker --- */}
+
+          {/* --- Time Filter --- */}
+          <div className="w-full max-w-xs">
+            <label htmlFor="time-filter" className="block text-sm font-medium text-black mb-1">
+              Start Time:
+            </label>
+            <select
+              id="time-filter"
+              value={minStartTime}
+              onChange={(e) => setMinStartTime(e.target.value)}
+              disabled={isLoading}
+              className="p-2 border border-zinc-600 rounded-lg text-stone-100 bg-zinc-700 w-full"
+            >
+              <option value="0">Any Time</option>
+              <option value="17">After 5 PM</option>
+              <option value="19">After 7 PM</option>
+              <option value="21">After 9 PM</option>
+            </select>
+          </div>
+          {/* --- END: Time Filter --- */}
 
           {/* --- COLLAPSIBLE GENRE FILTER --- */}
           <div className="w-full max-w-xs text-center">

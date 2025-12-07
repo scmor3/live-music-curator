@@ -184,12 +184,43 @@ async function updateJobLog(jobId, message, processedCount = null, totalCount = 
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, workerId) {
+async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, workerId) {
   // Add log prefix for easier tracing
   const logPrefix = `[Worker ${workerId}]`;
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
   const rawEventsList = await scrapeBandsintown(date, latitude, longitude, workerId);
+
+  // --- Time Filter Logic ---
+  let timeFilteredEvents = rawEventsList;
+
+  if (minStartTime && parseInt(minStartTime) > 0) {
+    const minHour = parseInt(minStartTime);
+
+    // We filter rawEventsList BEFORE the loop
+    timeFilteredEvents = rawEventsList.filter(event => {
+      // event.date is "2025-12-23T19:00:00". 
+      // We rely on string parsing to ensure we respect Venue Local Time.
+      if (!event.date || !event.date.includes('T')) return true; // Keep events with missing time
+
+      try {
+        const timePart = event.date.split('T')[1]; // "19:00:00"
+        const hourStr = timePart.split(':')[0];    // "19"
+        const hour = parseInt(hourStr, 10);
+        return hour >= minHour;
+      } catch (e) {
+        return true; // If parsing fails, be safe and keep it
+      }
+    });
+
+    logger.info(`${logPrefix} Time Filter (>${minHour}:00): Reduced ${rawEventsList.length} events to ${timeFilteredEvents.length}.`);
+  }
+
+  // Check if we found any artists (using the FILTERED list).
+  if (!timeFilteredEvents || timeFilteredEvents.length === 0) {
+    logger.info(`${logPrefix} No artists found for "${city}" on ${date} (after time filtering).`);
+    return { playlistId: null, events: [] };
+  }
 
   // --- DEBUG LOG START ---
   if (rawEventsList && rawEventsList.length > 0) {
@@ -899,6 +930,7 @@ app.get('/api/playlists', async (req, res) => {
         longitude,
         number_of_songs,
         excluded_genres,
+        min_start_time,
         updated_at
       ) VALUES (
         ${city},
@@ -907,6 +939,7 @@ app.get('/api/playlists', async (req, res) => {
         ${longitude},
         ${number_of_songs},
         ${genresArray},
+        ${minStartTime || 0},
         NOW()
       )
       RETURNING id;
