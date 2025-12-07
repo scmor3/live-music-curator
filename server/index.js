@@ -276,7 +276,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // We need to deduplicate by Artist Name, but keep the event object.
   const uniqueEventsMap = new Map();
 
-  rawEventsList.forEach(event => {
+  timeFilteredEvents.forEach(event => { 
     // Normalize name for key (lowercase, trimmed)
     const key = event.name.toLowerCase().trim();
     if (!uniqueEventsMap.has(key)) {
@@ -306,7 +306,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   }
 
   await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${date}.`, 0, uniqueEvents.length);
-  logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated to ${uniqueEvents.length} unique artists.`);
+  logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated and filtered to ${uniqueEvents.length} unique artists`);
 
   // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueEvents.length} unique artists...`, 0, uniqueEvents.length);
 
@@ -634,6 +634,7 @@ async function processJobQueue(workerId) {
       job.latitude,
       job.longitude,
       job.excluded_genres,
+      job.min_start_time,
       workerId
     );
 
@@ -861,8 +862,8 @@ app.get('/api/city-from-coords', async (req, res) => {
  */
 app.get('/api/playlists', async (req, res) => {
   // Validate Input
-  const { city, date, lat, lon, genres } = req.query;
-  const number_of_songs = 2;
+  const { city, date, lat, lon, genres, minStartTime } = req.query;
+  const number_of_songs = 1;
 
   if (!city || !date || !lat || !lon) {
     return res.status(400).json({ error: 'Missing required query parameters: city, date, lat, and lon' });
@@ -888,7 +889,8 @@ app.get('/api/playlists', async (req, res) => {
         search_city = ${city} AND 
         search_date = ${date} AND
         number_of_songs = ${number_of_songs} AND
-        excluded_genres IS NOT DISTINCT FROM ${genresArray}
+        excluded_genres IS NOT DISTINCT FROM ${genresArray} AND
+        min_start_time = ${minStartTime || 0}
       ORDER BY created_at DESC
       LIMIT 1;
     `;
