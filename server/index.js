@@ -184,7 +184,7 @@ async function updateJobLog(jobId, message, processedCount = null, totalCount = 
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, workerId) {
+async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, maxStartTime, workerId) {
   // Add log prefix for easier tracing
   const logPrefix = `[Worker ${workerId}]`;
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
@@ -194,8 +194,12 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // --- Time Filter Logic ---
   let timeFilteredEvents = rawEventsList;
 
-  if (minStartTime && parseInt(minStartTime) > 0) {
-    const minHour = parseInt(minStartTime);
+  // Parse inputs (default to 0 and 24 if undefined)
+  const minHour = minStartTime ? parseInt(minStartTime) : 0;
+  const maxHour = maxStartTime ? parseInt(maxStartTime) : 24;
+
+  // Only filter if we have a restriction (Min > 0 OR Max < 24)
+  if (minHour > 0 || maxHour < 24) {
 
     // We filter rawEventsList BEFORE the loop
     timeFilteredEvents = rawEventsList.filter(event => {
@@ -207,13 +211,13 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         const timePart = event.date.split('T')[1]; // "19:00:00"
         const hourStr = timePart.split(':')[0];    // "19"
         const hour = parseInt(hourStr, 10);
-        return hour >= minHour;
+        return hour >= minHour && hour < maxHour;
       } catch (e) {
         return true; // If parsing fails, be safe and keep it
       }
     });
 
-    logger.info(`${logPrefix} Time Filter (>${minHour}:00): Reduced ${rawEventsList.length} events to ${timeFilteredEvents.length}.`);
+    logger.info(`${logPrefix} Time Filter (${minHour}:00 - ${maxHour}:00): Reduced ${rawEventsList.length} events to ${timeFilteredEvents.length}.`);
   }
 
   // Check if we found any artists (using the FILTERED list).
@@ -305,7 +309,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     logger.warn(`${logPrefix} Failed to save initial events data: ${saveErr.message}`);
   }
 
-  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${date}.`, 0, uniqueEvents.length);
+  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${date}`, 0, uniqueEvents.length);
   logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated and filtered to ${uniqueEvents.length} unique artists`);
 
   // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueEvents.length} unique artists...`, 0, uniqueEvents.length);
@@ -635,6 +639,7 @@ async function processJobQueue(workerId) {
       job.longitude,
       job.excluded_genres,
       job.min_start_time,
+      job.max_start_time,
       workerId
     );
 
@@ -862,7 +867,7 @@ app.get('/api/city-from-coords', async (req, res) => {
  */
 app.get('/api/playlists', async (req, res) => {
   // Validate Input
-  const { city, date, lat, lon, genres, minStartTime } = req.query;
+  const { city, date, lat, lon, genres, minStartTime, maxStartTime } = req.query;
   const number_of_songs = 1;
 
   if (!city || !date || !lat || !lon) {
@@ -890,7 +895,8 @@ app.get('/api/playlists', async (req, res) => {
         search_date = ${date} AND
         number_of_songs = ${number_of_songs} AND
         excluded_genres IS NOT DISTINCT FROM ${genresArray} AND
-        min_start_time = ${minStartTime || 0}
+        min_start_time = ${minStartTime || 0} AND
+        max_start_time = ${maxStartTime || 24}
       ORDER BY created_at DESC
       LIMIT 1;
     `;
@@ -933,6 +939,7 @@ app.get('/api/playlists', async (req, res) => {
         number_of_songs,
         excluded_genres,
         min_start_time,
+        max_start_time,
         updated_at
       ) VALUES (
         ${city},
@@ -942,6 +949,7 @@ app.get('/api/playlists', async (req, res) => {
         ${number_of_songs},
         ${genresArray},
         ${minStartTime || 0},
+        ${maxStartTime || 24},
         NOW()
       )
       RETURNING id;
