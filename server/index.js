@@ -181,6 +181,18 @@ async function updateJobLog(jobId, message, processedCount = null, totalCount = 
   }
 }
 
+function formatDatePretty(isoDate) {
+  if (!isoDate) return '';
+  const [year, month, day] = isoDate.split('-');
+  return `${month}-${day}-${year}`;
+}
+
+function formatHourShort(hour) {
+  if (hour === 0 || hour === 24) return '12am';
+  if (hour === 12) return '12pm';
+  return hour > 12 ? `${hour - 12}pm` : `${hour}am`;
+}
+
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
@@ -220,9 +232,34 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     logger.info(`${logPrefix} Time Filter (${minHour}:00 - ${maxHour}:00): Reduced ${rawEventsList.length} events to ${timeFilteredEvents.length}.`);
   }
 
+  // --- Construct Naming & Logging Strings ---
+  const prettyDate = formatDatePretty(date);
+  
+  let timeContext = '';
+  if (minHour > 0) timeContext += `After ${formatHourShort(minHour)}`;
+  if (maxHour < 24) {
+    if (timeContext) timeContext += ', ';
+    timeContext += `Before ${formatHourShort(maxHour)}`;
+  }
+
+  // Create suffixes for the playlist name
+  let nameContext = '';
+  if (timeContext) nameContext += ` (${timeContext})`;
+
+  // Genres suffix
+  if (excludedGenres && excludedGenres.length > 0) {
+    const prettyGenres = excludedGenres.map(g => g.charAt(0).toUpperCase() + g.slice(1)).join(', ');
+    // If we already have time context, append with comma
+    if (nameContext) {
+      nameContext = nameContext.slice(0, -1) + `, Excl: ${prettyGenres})`;
+    } else {
+      nameContext = ` (Excl: ${prettyGenres})`;
+    }
+  }
+
   // Check if we found any artists (using the FILTERED list).
   if (!timeFilteredEvents || timeFilteredEvents.length === 0) {
-    logger.info(`${logPrefix} No artists found for "${city}" on ${date} (after time filtering).`);
+    logger.info(`${logPrefix} No artists found for "${city}" on ${prettyDate}${nameContext} (after time filtering).`);
     return { playlistId: null, events: [] };
   }
 
@@ -246,17 +283,11 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 
   // await updateJobLog(jobId, `Scout returned! Found ${rawArtistList.length} artists.`, 0, rawArtistList.length);
 
-  let nameSuffix = ''; // Start with an empty suffix
-  if (excludedGenres && excludedGenres.length > 0) {
-    // Create a "pretty" version of the genres, e.g., "Country, Jazz"
-    const prettyGenres = excludedGenres.map(g => g.charAt(0).toUpperCase() + g.slice(1)).join(', ');
-    nameSuffix = ` (Excl: ${prettyGenres})`;
-  }
-
   // Create the new empty playlist on Spotify
   const playlistData = {
-    name: `${city} ${date} live music${nameSuffix}`,
-    description: `Artists performing in ${city} on ${date}, curated by Live Music Curator.`,
+    // UPDATED: Use new naming variables
+    name: `${city} ${prettyDate} live music${nameContext}`,
+    description: `Artists performing in ${city} on ${prettyDate}${timeContext ? ` ${timeContext}` : ''}, curated by Live Music Curator.`,
     public: true
   };
   const axiosConfig = {
@@ -309,7 +340,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     logger.warn(`${logPrefix} Failed to save initial events data: ${saveErr.message}`);
   }
 
-  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${date}`, 0, uniqueEvents.length);
+  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${prettyDate}${nameContext}`, 0, uniqueEvents.length);
   logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated and filtered to ${uniqueEvents.length} unique artists`);
 
   // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueEvents.length} unique artists...`, 0, uniqueEvents.length);
@@ -526,7 +557,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
   }
 
-  await updateJobLog(jobId, `Curation complete for ${city} on ${date}`, uniqueEvents.length, uniqueEvents.length);
+  await updateJobLog(jobId, `Curation complete for ${city} on ${prettyDate}`, uniqueEvents.length, uniqueEvents.length);
   logger.info(`${logPrefix} Curation complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
