@@ -181,15 +181,87 @@ async function updateJobLog(jobId, message, processedCount = null, totalCount = 
   }
 }
 
+function formatDatePretty(isoDate) {
+  if (!isoDate) return '';
+  const [year, month, day] = isoDate.split('-');
+  return `${month}-${day}-${year}`;
+}
+
+function formatHourShort(hour) {
+  if (hour === 0 || hour === 24) return '12am';
+  if (hour === 12) return '12pm';
+  return hour > 12 ? `${hour - 12}pm` : `${hour}am`;
+}
+
 /**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
-async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, workerId) {
+async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, maxStartTime, workerId) {
   // Add log prefix for easier tracing
   const logPrefix = `[Worker ${workerId}]`;
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
   const rawEventsList = await scrapeBandsintown(date, latitude, longitude, workerId);
+
+  // --- Time Filter Logic ---
+  let timeFilteredEvents = rawEventsList;
+
+  // Parse inputs (default to 0 and 24 if undefined)
+  const minHour = minStartTime ? parseInt(minStartTime) : 0;
+  const maxHour = maxStartTime ? parseInt(maxStartTime) : 24;
+
+  // Only filter if we have a restriction (Min > 0 OR Max < 24)
+  if (minHour > 0 || maxHour < 24) {
+
+    // We filter rawEventsList BEFORE the loop
+    timeFilteredEvents = rawEventsList.filter(event => {
+      // event.date is "2025-12-23T19:00:00". 
+      // We rely on string parsing to ensure we respect Venue Local Time.
+      if (!event.date || !event.date.includes('T')) return true; // Keep events with missing time
+
+      try {
+        const timePart = event.date.split('T')[1]; // "19:00:00"
+        const hourStr = timePart.split(':')[0];    // "19"
+        const hour = parseInt(hourStr, 10);
+        return hour >= minHour && hour < maxHour;
+      } catch (e) {
+        return true; // If parsing fails, be safe and keep it
+      }
+    });
+
+    logger.info(`${logPrefix} Time Filter (${minHour}:00 - ${maxHour}:00): Reduced ${rawEventsList.length} events to ${timeFilteredEvents.length}.`);
+  }
+
+  // --- Construct Naming & Logging Strings ---
+  const prettyDate = formatDatePretty(date);
+  
+  let timeContext = '';
+  if (minHour > 0) timeContext += `After ${formatHourShort(minHour)}`;
+  if (maxHour < 24) {
+    if (timeContext) timeContext += ', ';
+    timeContext += `Before ${formatHourShort(maxHour)}`;
+  }
+
+  // Create suffixes for the playlist name
+  let nameContext = '';
+  if (timeContext) nameContext += ` (${timeContext})`;
+
+  // Genres suffix
+  if (excludedGenres && excludedGenres.length > 0) {
+    const prettyGenres = excludedGenres.map(g => g.charAt(0).toUpperCase() + g.slice(1)).join(', ');
+    // If we already have time context, append with comma
+    if (nameContext) {
+      nameContext = nameContext.slice(0, -1) + `, Excl: ${prettyGenres})`;
+    } else {
+      nameContext = ` (Excl: ${prettyGenres})`;
+    }
+  }
+
+  // Check if we found any artists (using the FILTERED list).
+  if (!timeFilteredEvents || timeFilteredEvents.length === 0) {
+    logger.info(`${logPrefix} No artists found for "${city}" on ${prettyDate}${nameContext} (after time filtering).`);
+    return { playlistId: null, events: [] };
+  }
 
   // --- DEBUG LOG START ---
   if (rawEventsList && rawEventsList.length > 0) {
@@ -211,17 +283,11 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 
   // await updateJobLog(jobId, `Scout returned! Found ${rawArtistList.length} artists.`, 0, rawArtistList.length);
 
-  let nameSuffix = ''; // Start with an empty suffix
-  if (excludedGenres && excludedGenres.length > 0) {
-    // Create a "pretty" version of the genres, e.g., "Country, Jazz"
-    const prettyGenres = excludedGenres.map(g => g.charAt(0).toUpperCase() + g.slice(1)).join(', ');
-    nameSuffix = ` (Excl: ${prettyGenres})`;
-  }
-
   // Create the new empty playlist on Spotify
   const playlistData = {
-    name: `${city} ${date} live music${nameSuffix}`,
-    description: `Artists performing in ${city} on ${date}, curated by Live Music Curator.`,
+    // UPDATED: Use new naming variables
+    name: `${city} ${prettyDate} live music${nameContext}`,
+    description: `Artists performing in ${city} on ${prettyDate}${timeContext ? ` ${timeContext}` : ''}, curated by Live Music Curator.`,
     public: true
   };
   const axiosConfig = {
@@ -245,7 +311,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // We need to deduplicate by Artist Name, but keep the event object.
   const uniqueEventsMap = new Map();
 
-  rawEventsList.forEach(event => {
+  timeFilteredEvents.forEach(event => { 
     // Normalize name for key (lowercase, trimmed)
     const key = event.name.toLowerCase().trim();
     if (!uniqueEventsMap.has(key)) {
@@ -274,8 +340,8 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     logger.warn(`${logPrefix} Failed to save initial events data: ${saveErr.message}`);
   }
 
-  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${date}.`, 0, uniqueEvents.length);
-  logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated to ${uniqueEvents.length} unique artists.`);
+  await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${prettyDate}${nameContext}`, 0, uniqueEvents.length);
+  logger.info(`${logPrefix} Found ${rawEventsList.length} total events, de-duplicated and filtered to ${uniqueEvents.length} unique artists`);
 
   // await updateJobLog(jobId, `De-duplicated list. Processing ${uniqueEvents.length} unique artists...`, 0, uniqueEvents.length);
 
@@ -491,7 +557,7 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
   }
 
-  await updateJobLog(jobId, `Curation complete for ${city} on ${date}`, uniqueEvents.length, uniqueEvents.length);
+  await updateJobLog(jobId, `Curation complete for ${city} on ${prettyDate}`, uniqueEvents.length, uniqueEvents.length);
   logger.info(`${logPrefix} Curation complete. Total tracks added to playlist: ${tracksAddedCount}`);
   // After the loop, check if we actually added any songs.
   if (tracksAddedCount === 0) {
@@ -603,6 +669,8 @@ async function processJobQueue(workerId) {
       job.latitude,
       job.longitude,
       job.excluded_genres,
+      job.min_start_time,
+      job.max_start_time,
       workerId
     );
 
@@ -830,8 +898,8 @@ app.get('/api/city-from-coords', async (req, res) => {
  */
 app.get('/api/playlists', async (req, res) => {
   // Validate Input
-  const { city, date, lat, lon, genres } = req.query;
-  const number_of_songs = 2;
+  const { city, date, lat, lon, genres, minStartTime, maxStartTime } = req.query;
+  const number_of_songs = 1;
 
   if (!city || !date || !lat || !lon) {
     return res.status(400).json({ error: 'Missing required query parameters: city, date, lat, and lon' });
@@ -857,7 +925,9 @@ app.get('/api/playlists', async (req, res) => {
         search_city = ${city} AND 
         search_date = ${date} AND
         number_of_songs = ${number_of_songs} AND
-        excluded_genres IS NOT DISTINCT FROM ${genresArray}
+        excluded_genres IS NOT DISTINCT FROM ${genresArray} AND
+        min_start_time = ${minStartTime || 0} AND
+        max_start_time = ${maxStartTime || 24}
       ORDER BY created_at DESC
       LIMIT 1;
     `;
@@ -899,6 +969,8 @@ app.get('/api/playlists', async (req, res) => {
         longitude,
         number_of_songs,
         excluded_genres,
+        min_start_time,
+        max_start_time,
         updated_at
       ) VALUES (
         ${city},
@@ -907,6 +979,8 @@ app.get('/api/playlists', async (req, res) => {
         ${longitude},
         ${number_of_songs},
         ${genresArray},
+        ${minStartTime || 0},
+        ${maxStartTime || 24},
         NOW()
       )
       RETURNING id;
