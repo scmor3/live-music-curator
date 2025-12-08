@@ -22,6 +22,18 @@ export default function HomePage() {
   const [excludedGenres, setExcludedGenres] = useState<string[]>([]); // Holds the selected genres
   const [showGenres, setShowGenres] = useState(false);
   
+  // State for time filter (Default '-1' which represents "Optional")
+  const [minStartTime, setMinStartTime] = useState('-1'); 
+  const [maxStartTime, setMaxStartTime] = useState('-1');
+
+  // Helper to format hours for the dropdown (0-24)
+  const formatHourOption = (hour: number) => {
+    if (hour === 0) return '12 AM (Start of Day)';
+    if (hour === 12) return '12 PM (Noon)';
+    if (hour === 24) return '12 AM (End of Day)';
+    return hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
+  };
+
   const [date, setDate] = useState('');
   
   // We need state variables to track the API call
@@ -282,9 +294,16 @@ export default function HomePage() {
       setError('Please select a valid date (up to 1 year from now).');
       return;
     }
+
+    if (parseInt(minStartTime) >= parseInt(maxStartTime)) {
+      setError('"Starts on or After" must be earlier than "Starts Before".');
+      return;
+    }
+    
     console.log('Button clicked!');
     console.log('User selected city:', selectedCity.name);
     console.log('User selected date:', date);
+    console.log('User selected time filter:', minStartTime);
 
     // --- Start the API Call ---
     setIsLoading(true); // Show loading spinner
@@ -292,13 +311,25 @@ export default function HomePage() {
     setPlaylistId(''); // Clear any old results
     setPollingStatusMessage('Submitting your request...');
 
+    // --- Convert "-1" (Optional) to real integer values for logic ---
+    const effectiveMin = minStartTime === '-1' ? 0 : parseInt(minStartTime);
+    const effectiveMax = maxStartTime === '-1' ? 24 : parseInt(maxStartTime);
+
+    // Validation for Time Range
+    if (effectiveMin >= effectiveMax) {
+      setError('"Starts After" time must be earlier than "Starts Before" time.');
+      return;
+    }
+
     try {
       // Build the URL for our backend API
       const queryParams = new URLSearchParams({
         city: selectedCity.name,
         date: date,
         lat: selectedCity.latitude.toString(), // Convert number to string for URL
-        lon: selectedCity.longitude.toString()  // Convert number to string for URL
+        lon: selectedCity.longitude.toString(),  // Convert number to string for URL
+        minStartTime: effectiveMin.toString(),
+        maxStartTime: effectiveMax.toString()
       });
 
       // If the user has selected any genres...
@@ -465,6 +496,55 @@ export default function HomePage() {
           </div>
           {/* --- END: Date Picker --- */}
 
+          {/* --- Dual Time Filters --- */}
+          <div className="w-full max-w-xs flex flex-row flex-wrap gap-2">
+            
+            {/* Starts After */}
+            <div className="flex-1 min-w-[130px]">
+              <label htmlFor="min-time" className="block text-sm font-medium text-black mb-1">
+                Starts at or After:
+              </label>
+              <select
+                id="min-time"
+                value={minStartTime}
+                onChange={(e) => setMinStartTime(e.target.value)}
+                disabled={isLoading}
+                className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark w-full text-sm"
+              >
+                <option value="-1">Optional</option>
+                {Array.from({ length: 24 }, (_, i) => i).map((hour) => (
+                  <option key={hour} value={hour}>
+                    {formatHourOption(hour)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Starts Before */}
+            <div className="flex-1 min-w-[130px]">
+              <label htmlFor="max-time" className="block text-sm font-medium text-black mb-1">
+                Starts Before:
+              </label>
+              <select
+                id="max-time"
+                value={maxStartTime}
+                onChange={(e) => setMaxStartTime(e.target.value)}
+                disabled={isLoading}
+                className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark w-full text-sm"
+              >
+                <option value="-1">Optional</option>
+                {/* 24 down to 1 */}
+                {Array.from({ length: 24 }, (_, i) => 24 - i).map((hour) => (
+                  <option key={hour} value={hour}>
+                    {formatHourOption(hour)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+          </div>
+          {/* --- END: Dual Time Filters --- */}
+
           {/* --- COLLAPSIBLE GENRE FILTER --- */}
           <div className="w-full max-w-xs text-center">
             
@@ -524,14 +604,20 @@ export default function HomePage() {
           {/* --- END: COLLAPSIBLE GENRE FILTER --- */}
 
           {/* --- Submit Button --- */}
-          {/* This is now a direct child of the 'gap-4' flex container */}
           <button 
             onClick={handlePlaylistCreation} 
             disabled={isLoading || !selectedCity || !date}
-            className="py-2 px-4 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-amber-700 disabled:opacity-50 mt-2"
+            className="cursor-pointer py-2 px-4 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-amber-700 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-2"
           >
             Create
           </button>
+
+          {/* --- Error Message Display (Only shows if there is an error in Form Mode) --- */}
+          {error && !jobId && (
+              <p className="text-red-500 text-sm font-medium text-center">
+                {error}
+              </p>
+          )}
         </>
       )}
     </div>
