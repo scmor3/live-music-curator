@@ -294,11 +294,6 @@ export default function HomePage() {
       setError('Please select a valid date (up to 1 year from now).');
       return;
     }
-
-    if (parseInt(minStartTime) >= parseInt(maxStartTime)) {
-      setError('"Starts on or After" must be earlier than "Starts Before".');
-      return;
-    }
     
     console.log('Button clicked!');
     console.log('User selected city:', selectedCity.name);
