@@ -295,6 +295,16 @@ export default function HomePage() {
       return;
     }
     
+    // --- Convert "-1" (Optional) to real integer values for logic ---
+    const effectiveMin = minStartTime === '-1' ? 0 : parseInt(minStartTime);
+    const effectiveMax = maxStartTime === '-1' ? 24 : parseInt(maxStartTime);
+
+    // Validation for Time Range
+    if (effectiveMin >= effectiveMax) {
+      setError('"Starts After" time must be earlier than "Starts Before" time.');
+      return;
+    }
+
     console.log('Button clicked!');
     console.log('User selected city:', selectedCity.name);
     console.log('User selected date:', date);
@@ -305,16 +315,6 @@ export default function HomePage() {
     setError(''); // Clear any old errors
     setPlaylistId(''); // Clear any old results
     setPollingStatusMessage('Submitting your request...');
-
-    // --- Convert "-1" (Optional) to real integer values for logic ---
-    const effectiveMin = minStartTime === '-1' ? 0 : parseInt(minStartTime);
-    const effectiveMax = maxStartTime === '-1' ? 24 : parseInt(maxStartTime);
-
-    // Validation for Time Range
-    if (effectiveMin >= effectiveMax) {
-      setError('"Starts After" time must be earlier than "Starts Before" time.');
-      return;
-    }
 
     try {
       // Build the URL for our backend API
@@ -380,6 +380,7 @@ export default function HomePage() {
     setPollingStatusMessage('');
     setError('');
     setEvents([]);
+    setIsLoading(false);
     // We don't clear the form inputs (city/date) so they can easily tweak them!
   };
 
@@ -482,7 +483,10 @@ export default function HomePage() {
               type="date"
               id="date-picker"
               value={date} 
-              onChange={(e) => setDate(e.target.value)} 
+              onChange={(e) => {
+                setDate(e.target.value);
+                setError(''); // Clear old errors on change
+                }} 
               min={todayString || ''} // Use empty string if state is null
               max={maxDateString || ''} // Use empty string if state is null
               disabled={isLoading || !todayString} // Disable if loading OR if dates haven't been set
@@ -502,7 +506,10 @@ export default function HomePage() {
               <select
                 id="min-time"
                 value={minStartTime}
-                onChange={(e) => setMinStartTime(e.target.value)}
+                onChange={(e) => {
+                  setMinStartTime(e.target.value)
+                  setError('');
+                }}
                 disabled={isLoading}
                 className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark w-full text-sm"
               >
@@ -523,13 +530,15 @@ export default function HomePage() {
               <select
                 id="max-time"
                 value={maxStartTime}
-                onChange={(e) => setMaxStartTime(e.target.value)}
+                onChange={(e) => {
+                  setMaxStartTime(e.target.value)
+                  setError('');
+                }}
                 disabled={isLoading}
                 className="p-2 border border-zinc-600 rounded-lg text-champagne-pink bg-grey-blue color-scheme-dark w-full text-sm"
               >
                 <option value="-1">Optional</option>
-                {/* 24 down to 1 */}
-                {Array.from({ length: 24 }, (_, i) => 24 - i).map((hour) => (
+                {Array.from({ length: 24 }, (_, i) => i).map((hour) => (
                   <option key={hour} value={hour}>
                     {formatHourOption(hour)}
                   </option>
