@@ -131,6 +131,24 @@ export default function LiveActivityFeed({
     }
   }, [visibleLogs, isQueueEmpty]);
 
+  // 6. SMART FINISH SCROLL
+  // When status becomes 'complete', ensure we see the final message,
+  // BUT ONLY if the user hasn't scrolled up to read history.
+  useEffect(() => {
+    if (status === 'complete' && scrollContainerRef.current) {
+      const container = scrollContainerRef.current;
+      
+      // Calculate if user is near bottom (within 200px buffer)
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+
+      if (isNearBottom) {
+        // Only force scroll if they were following the feed
+        setTimeout(() => {
+          container.scrollTop = container.scrollHeight;
+        }, 100);
+      }
+    }
+  }, [status]);
 
   // --- VISUAL CALCULATIONS ---
   const displayCount = visibleLogs.length;
