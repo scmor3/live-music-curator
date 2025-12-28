@@ -4,6 +4,19 @@
 import { useState, useEffect } from 'react';
 import { text } from 'stream/consumers';
 import LiveActivityFeed from './components/LiveActivityFeed';
+import { createClient } from '@supabase/supabase-js';
+
+// Initialize Supabase client
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error(
+    'Missing Supabase Environment Variables! Please check .env.local'
+  );
+}
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 type CitySuggestion = {
   name: string;
@@ -25,6 +38,17 @@ export default function HomePage() {
   // State for time filter (Default '-1' which represents "Optional")
   const [minStartTime, setMinStartTime] = useState('-1'); 
   const [maxStartTime, setMaxStartTime] = useState('-1');
+
+  // -- START: Auto-login logic --
+  // Authenticate user anonymously on load
+  useEffect(() => {
+    const signIn = async () => {
+      const { error } = await supabase.auth.signInAnonymously();
+      if (error) console.error('Error signing in anonymously:', error);
+    };
+    signIn();
+  }, []);
+  // --- END: Auto-login logic ---  
 
   // Helper to format hours for the dropdown (0-24)
   const formatHourOption = (hour: number) => {
@@ -334,7 +358,16 @@ export default function HomePage() {
         queryParams.append('genres', genreString); // 'genres' (plural)
       }
 
-      const response = await fetch(`${API_URL}/api/playlists?${queryParams}`);
+      // 1. Get the current user's session token
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      // 2. Send the token in the headers
+      const response = await fetch(`${API_URL}/api/playlists?${queryParams}`, {
+        headers: {
+          'Authorization': `Bearer ${token}` // <--- This allows the backend to know who we are
+        }
+      });
 
       // We're expecting a 202 (Accepted) or 200 (OK)
       if (!response.ok) {
