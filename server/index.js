@@ -6,6 +6,7 @@ const levenshtein = require('fast-levenshtein');
 const cors = require('cors');
 const path = require('path'); 
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+const { createClient } = require('@supabase/supabase-js');
 
 const { scrapeBandsintown } = require('./utils/bandsintownScraper');
 // --- Logger Configuration ---
@@ -43,6 +44,21 @@ const logger = {
 // --- End Logger Configuration ---
 
 logger.info("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
+
+// Initialize Supabase Admin Client
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
+
+if (!supabaseUrl || !supabaseServiceKey) {
+  logger.warn('⚠️ Missing SUPABASE_SERVICE_KEY. Auth verification will fail.');
+}
+
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
+  }
+});
 
 // --- App & Middleware Configuration ---
 const app = express();
@@ -132,6 +148,49 @@ const MASTER_SPOTIFY_ID = process.env.MASTER_SPOTIFY_ID;
  * A simple helper function to pause execution.
  */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Verifies the JWT token and syncs the user to the local DB if needed.
+ */
+async function getUserIdFromRequest(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return null;
+
+  const token = authHeader.split(' ')[1]; // Remove "Bearer "
+  if (!token) return null;
+
+  try {
+    // 1. Verify token with Supabase Cloud
+    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+    
+    if (error || !user) {
+      logger.debug(`Auth verification failed: ${error?.message}`);
+      return null;
+    }
+
+    // 2. Just-in-Time Sync (Local Dev Only)
+    // If we are running locally, the user ID might not exist in our local 'auth.users' table.
+    // We insert it now to prevent Foreign Key errors.
+    if (!process.env.DATABASE_URL) { // !DATABASE_URL usually implies local .env usage
+      try {
+        await sql`
+          INSERT INTO auth.users (id, email)
+          VALUES (${user.id}, ${user.email})
+          ON CONFLICT (id) DO UPDATE 
+          SET email = EXCLUDED.email
+        `;
+        // logger.debug(`[Local Sync] Synced user ${user.id} to local DB.`);
+      } catch (syncErr) {
+        logger.warn(`[Local Sync] Failed to sync user: ${syncErr.message}`);
+      }
+    }
+
+    return user.id;
+  } catch (err) {
+    logger.error(`Unexpected auth error: ${err.message}`);
+    return null;
+  }
+}
 
 /**
  * Uses the master refresh token to get a new, valid master access token.
@@ -901,6 +960,14 @@ app.get('/api/playlists', async (req, res) => {
   const { city, date, lat, lon, genres, minStartTime, maxStartTime } = req.query;
   const number_of_songs = 1;
 
+  // Verify the user (if a token exists)
+  const ownerId = await getUserIdFromRequest(req);
+  if (ownerId) {
+    logger.info(`Request from authenticated user: ${ownerId}`);
+  } else {
+    logger.info(`Request from anonymous/unauthenticated user.`);
+  }
+
   if (!city || !date || !lat || !lon) {
     return res.status(400).json({ error: 'Missing required query parameters: city, date, lat, and lon' });
   }
@@ -971,7 +1038,8 @@ app.get('/api/playlists', async (req, res) => {
         excluded_genres,
         min_start_time,
         max_start_time,
-        updated_at
+        updated_at,
+        owner_id
       ) VALUES (
         ${city},
         ${date},
@@ -981,7 +1049,8 @@ app.get('/api/playlists', async (req, res) => {
         ${genresArray},
         ${minStartTime || 0},
         ${maxStartTime || 24},
-        NOW()
+        NOW(),
+        ${ownerId}
       )
       RETURNING id;
     `;
