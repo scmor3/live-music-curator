@@ -176,7 +176,8 @@ async function getUserIdFromRequest(req) {
         await sql`
           INSERT INTO auth.users (id, email)
           VALUES (${user.id}, ${user.email})
-          ON CONFLICT (id) DO NOTHING
+          ON CONFLICT (id) DO UPDATE 
+          SET email = EXCLUDED.email
         `;
         // logger.debug(`[Local Sync] Synced user ${user.id} to local DB.`);
       } catch (syncErr) {

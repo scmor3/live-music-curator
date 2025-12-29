@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { text } from 'stream/consumers';
 import LiveActivityFeed from './components/LiveActivityFeed';
 import { createClient } from '@supabase/supabase-js';
+import AuthModal from './components/AuthModal';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -40,13 +41,34 @@ export default function HomePage() {
   const [maxStartTime, setMaxStartTime] = useState('-1');
 
   // -- START: Auto-login logic --
-  // Authenticate user anonymously on load
+  const [user, setUser] = useState<any>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
   useEffect(() => {
-    const signIn = async () => {
-      const { error } = await supabase.auth.signInAnonymously();
-      if (error) console.error('Error signing in anonymously:', error);
+    const initAuth = async () => {
+      // 1. Check if we already have a session (e.g. page refresh)
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (session?.user) {
+        setUser(session.user);
+      } else {
+        // 2. If no session, sign in anonymously immediately
+        const { data, error } = await supabase.auth.signInAnonymously();
+        if (error) console.error('Error signing in anonymously:', error);
+        if (data?.user) setUser(data.user);
+      }
+
+      // 3. Listen for changes (e.g. when they upgrade via the modal)
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (session?.user) {
+          setUser(session.user);
+        }
+      });
+
+      return () => subscription.unsubscribe();
     };
-    signIn();
+    
+    initAuth();
   }, []);
   // --- END: Auto-login logic ---  
 
@@ -417,9 +439,57 @@ export default function HomePage() {
     // We don't clear the form inputs (city/date) so they can easily tweak them!
   };
 
+  const handleLogout = async () => {
+    // 1. Log out the current user
+    await supabase.auth.signOut();
+    
+    // 2. Immediately sign in anonymously so the app still works
+    const { data, error } = await supabase.auth.signInAnonymously();
+    if (error) console.error('Error starting anon session:', error);
+    
+    // 3. Update local state
+    if (data?.user) setUser(data.user);
+    
+    // Optional: Clear any old playlist data from the screen
+    handleStartOver();
+  };
+
   return (
     // --- Page layout: dark background, content centered ---
     <main className="flex min-h-screen flex-col items-center justify-start lg:justify-center p-4 sm:p-8 bg-pastel-yellow">
+
+      {/* --- Top Right Auth Button --- */}
+      <div className="absolute top-4 right-4 z-10">
+        {user && user.is_anonymous ? (
+          <button 
+            onClick={() => setIsAuthModalOpen(true)}
+            className="px-4 py-2 bg-zinc-800 text-stone-100 text-sm font-semibold rounded-full hover:bg-zinc-700 shadow-md transition-all"
+          >
+            Log In / Sign Up
+          </button>
+        ) : user ? (
+          <div className="flex items-center gap-3 animate-in fade-in">
+             
+             {/* Logout Button */}
+             <button
+               onClick={handleLogout}
+               className="text-sm text-zinc-600 hover:text-red-500 font-semibold underline decoration-transparent hover:decoration-red-500 transition-all"
+             >
+               Sign Out
+             </button>
+          </div>
+        ) : null}
+      </div>
+
+      {/* --- The Modal Component --- */}
+      <AuthModal 
+        isOpen={isAuthModalOpen} 
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={() => {
+           console.log("User successfully upgraded!");
+           // The useEffect hook above will automatically update the 'user' state
+        }}
+      />
       
       {/* --- Centered "card" with a color flush with background --- */}
       <div className="p-8 w-full max-w-lg text-center">
@@ -456,6 +526,24 @@ export default function HomePage() {
               onReset={handleStartOver}
 
             />
+
+            {/* --- START: Post-Creation CTA --- */}
+            {/* Show only if playlist exists AND user is still anonymous */}
+            {playlistId && user?.is_anonymous && (
+               <div className="mt-4 p-4 bg-zinc-800/80 rounded-xl border border-zinc-700 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 text-center w-full">
+                 <p className="text-stone-100 mb-3 text-sm">
+                   Don't lose this playlist! Create an account to save it to your history.
+                 </p>
+                 <button 
+                   onClick={() => setIsAuthModalOpen(true)}
+                   className="w-full py-2 bg-white text-zinc-900 font-bold rounded-lg hover:bg-gray-200 transition-colors"
+                 >
+                   Save to Account
+                 </button>
+               </div>
+            )}
+            {/* --- END: Post-Creation CTA --- */}
+
             {/* 2. The Cancel Button (Only show if NOT done) */}
             {!playlistId && !error && (
               <button 
