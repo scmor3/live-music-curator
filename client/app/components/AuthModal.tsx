@@ -19,7 +19,7 @@ type AuthModalProps = {
 };
 
 export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
-    const [view, setView] = useState<'signup' | 'login'>('signup');
+    const [view, setView] = useState<'signup' | 'login' | 'success'>('signup');
     
     // Input State
     const [email, setEmail] = useState('');
@@ -42,22 +42,55 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
 
     try {
         if (view === 'signup') {
-            // --- SIGN UP (UPGRADE) ---
-            const { data, error } = await supabase.auth.updateUser({
-            email: email,
-            password: password,
-            data: {
-                first_name: firstName,
-                last_name: lastName
-              }
-            });
+            // --- SIGN UP ---
+
+            // 1. Get the current URL (e.g., 'http://localhost:3000' or 'https://myapp.vercel.app')
+            const currentUrl = window.location.origin;
+            
+            // STEP A: Try to UPGRADE the current anonymous user
+            let { data, error } : { data: any; error: any } = await supabase.auth.updateUser(
+                { 
+                    email, 
+                    password,
+                    data: { first_name: firstName, last_name: lastName }
+                }, 
+                { emailRedirectTo: currentUrl }
+            );
+
+            // STEP B: Handle "User Not Found" (The Stale Session Issue)
+            // If the anon user was deleted from DB, we must clear the browser session and sign up fresh.
+            if (error && error.message.includes("User from sub claim in JWT does not exist")) {
+                console.warn("Anonymous user invalid. Clearing session and creating new account.");
+                
+                // 1. Nuke the stale session
+                await supabase.auth.signOut();
+
+                // 2. Create a brand new account
+                // (Note: The playlist is technically lost here because the owner is gone, 
+                // but at least the user gets a working account)
+                const signUpResult = await supabase.auth.signUp({
+                    email,
+                    password,
+                    options: {
+                        data: { first_name: firstName, last_name: lastName },
+                        emailRedirectTo: currentUrl
+                    }
+                });
+                
+                data = signUpResult.data as any;
+                error = signUpResult.error;
+            }
+
             if (error) throw error;
             
-            if (data.user?.identities && data.user.identities.length > 0) {
-            onSuccess();
-            onClose();
+            // STEP C: Determine if we are done or need verification
+            // If we have a user but NO session, it means Email Verification is required.
+            if (data.user && !data.session) {
+                setView('success');
             } else {
-            setError('Please check your email to confirm your account.');
+                // We are fully logged in (verification likely disabled or auto-confirmed)
+                onSuccess();
+                onClose();
             }
 
         } else {
@@ -94,6 +127,27 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
           <XMarkIcon className="w-6 h-6" />
         </button>
 
+        {view === 'success' ? (
+          /* 1. SUCCESS VIEW */
+          <div className="text-center py-8 animate-in zoom-in-95 duration-200">
+             <div className="mx-auto w-16 h-16 bg-green-900/30 rounded-full flex items-center justify-center mb-4">
+               <svg className="w-8 h-8 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+               </svg>
+             </div>
+             <h2 className="text-2xl font-bold text-white mb-2">Check your inbox!</h2>
+             <p className="text-zinc-400 mb-6">
+               We've sent a confirmation link to <span className="text-white font-medium">{email}</span>.
+             </p>
+             <button 
+               onClick={onClose}
+               className="bg-zinc-800 text-white px-6 py-2 rounded-full font-semibold hover:bg-zinc-700 transition"
+             >
+               Close
+             </button>
+          </div>
+        ) : (
+          <>
         <h2 className="text-2xl font-bold text-white mb-2">
           {view === 'signup' ? 'Save your Playlists' : 'Welcome Back'}
         </h2>
@@ -200,7 +254,8 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
             </>
           )}
         </div>
-        
+        </>
+        )}
       </div>
     </div>
   );
