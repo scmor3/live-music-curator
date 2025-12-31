@@ -524,25 +524,10 @@ export default function HomePage() {
               cityName={selectedCity?.name || 'Unknown City'}
               dateStr={date}
               onReset={handleStartOver}
-
+              jobId={jobId}
+              isAnonymous={user?.is_anonymous}
+              onAuthTrigger={() => setIsAuthModalOpen(true)}
             />
-
-            {/* --- START: Post-Creation CTA --- */}
-            {/* Show only if playlist exists AND user is still anonymous */}
-            {playlistId && user?.is_anonymous && (
-               <div className="mt-4 p-4 bg-zinc-800/80 rounded-xl border border-zinc-700 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 text-center w-full">
-                 <p className="text-stone-100 mb-3 text-sm">
-                   Don't lose this playlist! Create an account to save it to your history.
-                 </p>
-                 <button 
-                   onClick={() => setIsAuthModalOpen(true)}
-                   className="w-full py-2 bg-white text-zinc-900 font-bold rounded-lg hover:bg-gray-200 transition-colors"
-                 >
-                   Save to Account
-                 </button>
-               </div>
-            )}
-            {/* --- END: Post-Creation CTA --- */}
 
             {/* 2. The Cancel Button (Only show if NOT done) */}
             {!playlistId && !error && (

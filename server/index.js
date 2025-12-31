@@ -1119,6 +1119,80 @@ app.get('/api/playlists/status', async (req, res) => {
 });
 
 /**
+ * Save a generated playlist to the user's permanent library.
+ */
+app.post('/api/save-playlist', async (req, res) => {
+  const { jobId } = req.body;
+
+  // 1. Verify Auth
+  const userId = await getUserIdFromRequest(req);
+  if (!userId) {
+    return res.status(401).json({ error: 'Unauthorized. Please log in to save playlists.' });
+  }
+
+  if (!jobId) {
+    return res.status(400).json({ error: 'Missing required field: jobId' });
+  }
+
+  try {
+    // 2. Fetch the Job to ensure it exists and belongs to (or was created by) this user.
+    // Note: We strictly enforce that the user saving it is the 'owner_id' 
+    // OR we can rely on the fact that they have the jobId. 
+    // For tighter security, let's verify ownership if owner_id is present.
+    const jobs = await sql`
+      SELECT * FROM playlist_jobs WHERE id = ${jobId};
+    `;
+
+    if (jobs.length === 0) {
+      return res.status(404).json({ error: 'Job not found.' });
+    }
+
+    const job = jobs[0];
+
+    // Security Check: If the job has an owner, ensure it matches the requester.
+    // (If owner_id is null, it's a legacy job or anonymous-unclaimed, so we might allow claiming it).
+    if (job.owner_id && job.owner_id !== userId) {
+      logger.warn(`User ${userId} attempted to save job ${jobId} owned by ${job.owner_id}`);
+      return res.status(403).json({ error: 'You do not have permission to save this playlist.' });
+    }
+
+    // 3. Insert into saved_playlists
+    // We construct the name dynamically or use the one from Spotify if we stored it, 
+    // but for now let's regenerate a standard name based on city/date.
+    const displayName = `${job.search_city} - ${job.search_date}`;
+
+    const saved = await sql`
+      INSERT INTO saved_playlists (
+        user_id,
+        original_job_id,
+        spotify_playlist_id,
+        name,
+        city_name,
+        playlist_date,
+        events_snapshot
+      ) VALUES (
+        ${userId},
+        ${job.id},
+        ${job.playlist_id},
+        ${displayName},
+        ${job.search_city},
+        ${job.search_date},
+        ${job.events_data}
+      )
+      RETURNING id;
+    `;
+
+    logger.info(`User ${userId} saved playlist from Job ${jobId} as SavedPlaylist ${saved[0].id}`);
+
+    return res.json({ success: true, savedId: saved[0].id });
+
+  } catch (error) {
+    logger.error('Error in /api/save-playlist:', error);
+    return res.status(500).json({ error: 'Failed to save playlist to library.' });
+  }
+});
+
+/**
  * The Worker Loop
  * Starts the queue processing when the server boots.
  */
