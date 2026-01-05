@@ -1,3 +1,5 @@
+## This document is out of date and requires a comprehensive update
+
 # API Flow Notes
 
 #### Section 1: User Authentication Flow (OAuth 2.0 - first login):

@@ -1,3 +1,5 @@
+## This document is out of date and requires a comprehensive update
+
 # Database Schema Notes
 
 Thinking about the database schema:  
