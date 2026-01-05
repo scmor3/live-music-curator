@@ -1119,76 +1119,238 @@ app.get('/api/playlists/status', async (req, res) => {
 });
 
 /**
- * Save a generated playlist to the user's permanent library.
+ * Save OR Update a playlist.
+ * Logic: If the user already has a saved playlist for this City + Date, 
+ * we overwrite it (Update). Otherwise, we create a new one (Insert).
  */
 app.post('/api/save-playlist', async (req, res) => {
   const { jobId } = req.body;
+  const userId = await getUserIdFromRequest(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+  if (!jobId) return res.status(400).json({ error: 'Missing required field: jobId' });
 
+  try {
+    // 1. Fetch the Job Details
+    const jobs = await sql`SELECT * FROM playlist_jobs WHERE id = ${jobId}`;
+    if (jobs.length === 0) return res.status(404).json({ error: 'Job not found.' });
+    const job = jobs[0];
+
+    // 2. Check for EXISTING playlist (Same User + City + Date)
+    // We strictly enforce 1 saved playlist per City/Date per User.
+    const existing = await sql`
+      SELECT id FROM saved_playlists 
+      WHERE user_id = ${userId} 
+      AND city_name = ${job.search_city} 
+      AND playlist_date = ${job.search_date}
+    `;
+
+    const displayName = `${job.search_city} - ${job.search_date}`;
+
+    if (existing.length > 0) {
+      // --- UPDATE EXISTING ---
+      const savedId = existing[0].id;
+      logger.info(`Updating existing playlist ${savedId} for user ${userId}`);
+      
+      await sql`
+        UPDATE saved_playlists SET
+          original_job_id = ${job.id},
+          spotify_playlist_id = ${job.playlist_id},
+          name = ${displayName},
+          events_snapshot = ${job.events_data},
+          min_start_time = ${job.min_start_time},
+          max_start_time = ${job.max_start_time},
+          excluded_genres = ${job.excluded_genres},
+          latitude = ${job.latitude},
+          longitude = ${job.longitude},
+          created_at = NOW() -- Bump to top of list
+        WHERE id = ${savedId}
+      `;
+      return res.json({ success: true, savedId: savedId, action: 'updated' });
+    } else {
+      // --- INSERT NEW ---
+      const saved = await sql`
+        INSERT INTO saved_playlists (
+          user_id,
+          original_job_id,
+          spotify_playlist_id,
+          name,
+          city_name,
+          playlist_date,
+          events_snapshot,
+          min_start_time,
+          max_start_time,
+          excluded_genres,
+          latitude,
+          longitude
+        ) VALUES (
+          ${userId}, ${job.id},
+          ${job.playlist_id},
+          ${displayName},
+          ${job.search_city},
+          ${job.search_date},
+          ${job.events_data},
+          ${job.min_start_time},
+          ${job.max_start_time},
+          ${job.excluded_genres},
+          ${job.latitude},
+          ${job.longitude}
+        )
+        RETURNING id;
+      `;
+      return res.json({ success: true, savedId: saved[0].id, action: 'created' });
+    }
+  } catch (error) {
+    logger.error('Error in /api/save-playlist:', error);
+    return res.status(500).json({ error: 'Failed to save playlist.' });
+  }
+});
+
+/**
+ * Get all saved playlists for the authenticated user.
+ */
+app.get('/api/my-playlists', async (req, res) => {
   // 1. Verify Auth
   const userId = await getUserIdFromRequest(req);
   if (!userId) {
-    return res.status(401).json({ error: 'Unauthorized. Please log in to save playlists.' });
-  }
-
-  if (!jobId) {
-    return res.status(400).json({ error: 'Missing required field: jobId' });
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
   try {
-    // 2. Fetch the Job to ensure it exists and belongs to (or was created by) this user.
-    // Note: We strictly enforce that the user saving it is the 'owner_id' 
-    // OR we can rely on the fact that they have the jobId. 
-    // For tighter security, let's verify ownership if owner_id is present.
-    const jobs = await sql`
-      SELECT * FROM playlist_jobs WHERE id = ${jobId};
-    `;
-
-    if (jobs.length === 0) {
-      return res.status(404).json({ error: 'Job not found.' });
-    }
-
-    const job = jobs[0];
-
-    // Security Check: If the job has an owner, ensure it matches the requester.
-    // (If owner_id is null, it's a legacy job or anonymous-unclaimed, so we might allow claiming it).
-    if (job.owner_id && job.owner_id !== userId) {
-      logger.warn(`User ${userId} attempted to save job ${jobId} owned by ${job.owner_id}`);
-      return res.status(403).json({ error: 'You do not have permission to save this playlist.' });
-    }
-
-    // 3. Insert into saved_playlists
-    // We construct the name dynamically or use the one from Spotify if we stored it, 
-    // but for now let's regenerate a standard name based on city/date.
-    const displayName = `${job.search_city} - ${job.search_date}`;
-
-    const saved = await sql`
-      INSERT INTO saved_playlists (
-        user_id,
-        original_job_id,
-        spotify_playlist_id,
+    // 2. Fetch from DB
+    // We order by 'created_at' descending so the newest ones show up top.
+    const playlists = await sql`
+      SELECT 
+        id,
         name,
         city_name,
         playlist_date,
-        events_snapshot
-      ) VALUES (
-        ${userId},
-        ${job.id},
-        ${job.playlist_id},
-        ${displayName},
-        ${job.search_city},
-        ${job.search_date},
-        ${job.events_data}
-      )
+        spotify_playlist_id,
+        created_at,
+        events_snapshot,
+        -- New columns for "Edit/Update" functionality
+        min_start_time,
+        max_start_time,
+        excluded_genres
+      FROM saved_playlists 
+      WHERE user_id = ${userId}
+      ORDER BY created_at DESC;
+    `;
+
+    return res.json(playlists);
+
+  } catch (error) {
+    logger.error('Error in /api/my-playlists:', error);
+    return res.status(500).json({ error: 'Failed to fetch library.' });
+  }
+});
+
+/**
+ * Delete a saved playlist.
+ */
+app.delete('/api/my-playlists/:id', async (req, res) => {
+  const userId = await getUserIdFromRequest(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { id } = req.params;
+
+  try {
+    const result = await sql`
+      DELETE FROM saved_playlists 
+      WHERE id = ${id} AND user_id = ${userId}
       RETURNING id;
     `;
 
-    logger.info(`User ${userId} saved playlist from Job ${jobId} as SavedPlaylist ${saved[0].id}`);
+    if (result.length === 0) {
+      return res.status(404).json({ error: 'Playlist not found or access denied.' });
+    }
 
-    return res.json({ success: true, savedId: saved[0].id });
+    return res.json({ success: true });
+  } catch (error) {
+    logger.error('Error deleting playlist:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * REFRESH a saved playlist.
+ * Re-runs the curation logic and updates the existing row.
+ */
+app.post('/api/my-playlists/:id/refresh', async (req, res) => {
+  const userId = await getUserIdFromRequest(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { id } = req.params;
+
+  try {
+    // 1. Get the Saved Playlist
+    const savedRows = await sql`
+      SELECT * FROM saved_playlists WHERE id = ${id} AND user_id = ${userId}
+    `;
+    if (savedRows.length === 0) return res.status(404).json({ error: 'Playlist not found' });
+    const saved = savedRows[0];
+
+    // 2. Validate Coords
+    if (!saved.latitude || !saved.longitude) {
+      return res.status(400).json({ error: 'This saved playlist is outdated (missing coordinates). Please delete it and create a new one.' });
+    }
+
+    // 3. Create a "Shadow Job" for logging/tracking
+    const newJob = await sql`
+      INSERT INTO playlist_jobs (
+        search_city, search_date, latitude, longitude, number_of_songs, 
+        min_start_time, max_start_time, excluded_genres, 
+        owner_id, status
+      ) VALUES (
+        ${saved.city_name}, ${saved.playlist_date}, 
+        ${saved.latitude}, ${saved.longitude}, -- <--- FIX 1: Use 'saved.latitude'
+        1,
+        ${saved.min_start_time || 0}, ${saved.max_start_time || 24}, ${saved.excluded_genres},
+        ${userId}, 'building'
+      )
+      RETURNING id;
+    `;
+    const jobId = newJob[0].id;
+
+    // 4. Run the Logic
+    const accessToken = await getMasterAccessToken();
+    const { playlistId, events } = await runCurationLogic(
+      jobId,
+      saved.city_name,
+      saved.playlist_date,
+      1,
+      accessToken,
+      saved.latitude,   // <--- FIX 2: Use 'saved.latitude'
+      saved.longitude,  // <--- FIX 3: Use 'saved.longitude'
+      saved.excluded_genres,
+      saved.min_start_time,
+      saved.max_start_time,
+      99 
+    );
+
+    // 5. Update the Saved Playlist with new results
+    await sql`
+      UPDATE saved_playlists SET
+        spotify_playlist_id = ${playlistId},
+        events_snapshot = ${sql.json(events)},
+        original_job_id = ${jobId},
+        updated_at = NOW() 
+      WHERE id = ${id}
+    `;
+
+    // 6. Mark Job Complete
+    await sql`UPDATE playlist_jobs SET status = 'complete', playlist_id = ${playlistId} WHERE id = ${jobId}`;
+
+    // 7. Return the new data
+    return res.json({ 
+      success: true, 
+      playlistId, 
+      eventCount: events.length,
+      events: events 
+    });
 
   } catch (error) {
-    logger.error('Error in /api/save-playlist:', error);
-    return res.status(500).json({ error: 'Failed to save playlist to library.' });
+    logger.error(`Error refreshing playlist ${id}:`, error);
+    return res.status(500).json({ error: 'Failed to refresh playlist.' });
   }
 });
 

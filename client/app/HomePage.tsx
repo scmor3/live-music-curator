@@ -6,6 +6,10 @@ import { text } from 'stream/consumers';
 import LiveActivityFeed from './components/LiveActivityFeed';
 import { createClient } from '@supabase/supabase-js';
 import AuthModal from './components/AuthModal';
+import { 
+  FolderIcon
+} from '@heroicons/react/24/outline';
+import PlaylistSidebar from './components/PlaylistSidebar';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -39,6 +43,53 @@ export default function HomePage() {
   // State for time filter (Default '-1' which represents "Optional")
   const [minStartTime, setMinStartTime] = useState('-1'); 
   const [maxStartTime, setMaxStartTime] = useState('-1');
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // This function runs when you click a playlist in the sidebar
+  const handleLoadPlaylist = (playlist: any) => {
+    setIsSidebarOpen(false); // Close sidebar
+
+    // 1. Populate the Feed with historical data
+    const savedEvents = playlist.events_snapshot || [];
+    setPlaylistId(playlist.spotify_playlist_id);
+    setEvents(savedEvents);
+    
+    // 2. Update form inputs to match the history (for visual context)
+    setSearchQuery(playlist.city_name);
+
+    // The "Create" button checks if 'selectedCity' is null.
+    // We manually recreate this object so the user can immediately click "Create"
+    // to run a fresh scrape without re-typing the city name.
+    if (playlist.city_name && (!selectedCity || selectedCity.name !== playlist.city_name)) {
+      setSelectedCity({ name: playlist.city_name, latitude: 0, longitude: 0 }); 
+    }
+
+    // If DB date is ISO (2025-01-01T00:00:00), split it to get YYYY-MM-DD
+    const simpleDate = playlist.playlist_date ? playlist.playlist_date.split('T')[0] : '';
+    setDate(simpleDate); 
+
+    // 3. RESTORE FILTERS
+    // We populate the dropdowns and checkboxes with the saved values.
+    // This ensures if they click "Create" again, it respects their original preferences.
+    setMinStartTime(playlist.min_start_time?.toString() || '-1');
+    setMaxStartTime(playlist.max_start_time?.toString() || '-1');
+    setExcludedGenres(playlist.excluded_genres || []);
+    
+    // 4. RECONSTRUCT LOGS
+    // We map the saved event objects back into the "ARTIST:Name" format 
+    // so the Feed component can render the list rows.
+    const historyLogs = savedEvents.map((evt: any) => `ARTIST:${evt.name}`);
+    setLogs(historyLogs);
+    
+    // 5. Force the Feed into "Success" mode
+    setPollingStatusMessage('complete');
+    // progress should equal the count
+    setProgress({ current: savedEvents.length, total: savedEvents.length });
+    
+    // 6. Set jobId to the historical ID so the Feed component activates
+    setJobId(playlist.id.toString()); 
+  };
 
   // -- START: Auto-login logic --
   const [user, setUser] = useState<any>(null);
@@ -458,6 +509,21 @@ export default function HomePage() {
     // --- Page layout: dark background, content centered ---
     <main className="flex min-h-screen flex-col items-center justify-start lg:justify-center p-4 sm:p-8 bg-pastel-yellow">
 
+      {/* <--- Top Left Button */}
+      {user && (
+        <div className="absolute top-4 left-4 z-10">
+          <button 
+            onClick={() => setIsSidebarOpen(true)}
+            className="p-2 bg-zinc-800 text-stone-100 rounded-full hover:bg-zinc-700 shadow-md transition-all flex items-center gap-2"
+            title="My Library"
+          >
+            <FolderIcon className="w-5 h-5" />
+            <span className="hidden sm:inline text-sm font-semibold pr-1">My Library</span>
+          </button>
+        </div>
+      )}
+      {/* <--- Top Left Button END */}
+
       {/* --- Top Right Auth Button --- */}
       <div className="absolute top-4 right-4 z-10">
         {user && user.is_anonymous ? (
@@ -755,6 +821,13 @@ export default function HomePage() {
           ) : null}
         </div> */}
       </div>
+
+      <PlaylistSidebar 
+        isOpen={isSidebarOpen} 
+        onClose={() => setIsSidebarOpen(false)}
+        onSelectPlaylist={handleLoadPlaylist}
+      />
+
     </main>
   );
 }
