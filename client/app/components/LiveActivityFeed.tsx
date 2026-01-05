@@ -1,11 +1,28 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import confetti from 'canvas-confetti';
 import { 
   CheckCircleIcon, 
   ExclamationCircleIcon,
   MusicalNoteIcon,
   InformationCircleIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
+  BookmarkIcon,
+  XMarkIcon
 } from '@heroicons/react/24/outline';
+
+// Initialize Supabase client
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error(
+    'Missing Supabase Environment Variables! Please check .env.local'
+  );
+}
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 type LiveActivityFeedProps = {
   status: string;
@@ -17,6 +34,9 @@ type LiveActivityFeedProps = {
   cityName?: string;
   dateStr?: string;
   onReset: () => void;
+  jobId: string;
+  isAnonymous?: boolean;
+  onAuthTrigger?: () => void;
 };
 
 export default function LiveActivityFeed({ 
@@ -28,7 +48,10 @@ export default function LiveActivityFeed({
   events = [],
   cityName = 'Unknown City',
   dateStr = 'Unknown Date',
-  onReset
+  onReset,
+  jobId,
+  isAnonymous,
+  onAuthTrigger
 }: LiveActivityFeedProps) {
   
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -39,8 +62,56 @@ export default function LiveActivityFeed({
   const processedIndexRef = useRef(0);
   const [isQueueEmpty, setIsQueueEmpty] = useState(true);
 
-  // 1. HYPE CYCLE
+  // HYPE CYCLE
   const [hypeText, setHypeText] = useState('Initializing scraper...');
+
+  // State for save button
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  // Save Handler
+  const handleSaveToLibrary = async () => {
+    if (!jobId) return;
+
+    // --- Intercept Anonymous Users ---
+    if (isAnonymous && onAuthTrigger) {
+      onAuthTrigger(); // Open the modal
+      return;          // Stop execution (don't save yet)
+    }
+    // --------------------------------------------
+
+    setSaveStatus('saving');
+
+    try {
+      // Get the current user's token
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      if (!token) throw new Error('No active session');
+
+      const response = await fetch(`${API_URL}/api/save-playlist`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ jobId })
+      });
+
+      if (!response.ok) throw new Error('Failed to save');
+
+      setSaveStatus('saved');
+      
+      // Optional: Reset "saved" status after 3 seconds so they can save again if needed? 
+      // Or keep it 'saved' to show permanent success. Keeping it 'saved' is better UX.
+
+    } catch (err) {
+      console.error('Error saving playlist:', err);
+      setSaveStatus('error');
+      // Reset error after 3 seconds
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    }
+  };
+
   useEffect(() => {
     if (visibleLogs.length > 0) return; 
 
@@ -162,6 +233,19 @@ export default function LiveActivityFeed({
   const isComplete = status === 'complete' && !!playlistId;
   const isFailed = status === 'failed' || !!errorMessage;
 
+  useEffect(() => {
+    if (isComplete) {
+      // Fire confetti!
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 }, // Start slightly below center
+        zIndex: 9999,      // Ensure it pops over everything
+        colors: ['#4ade80', '#fbbf24', '#ffffff'] // Optional: Green/Gold/White theme
+      });
+    }
+  }, [isComplete]);
+
   // Helper to find event by artist name (with fuzzy fallback)
   const getEventForLog = (artistName: string) => {
     if (!events || events.length === 0) return null;
@@ -196,31 +280,59 @@ export default function LiveActivityFeed({
     <div className="w-full max-w-lg bg-zinc-900 rounded-2xl shadow-2xl overflow-hidden border border-zinc-800 animate-in fade-in slide-in-from-bottom-4 duration-500 h-[75vh] flex flex-col">
       
       {/* --- HEADER --- */}
-      <div className={`p-4 sm:p-6 pb-8 text-center relative transition-colors duration-700 ${
+      <div className={`p-3 border-b border-zinc-800 transition-colors duration-700 ${
         isComplete ? 'bg-zinc-800' : isFailed ? 'bg-red-900/20' : 'bg-night-blue'
       }`}>
         
         {isComplete ? (
-          <div className="animate-in zoom-in duration-500">
-            <h2 className="text-2xl font-bold text-dark-pastel-green mb-2">Playlist Ready!</h2>
-            <div className="flex flex-col gap-3 mt-4">
+          /* 3. CLEAN SINGLE ROW LAYOUT (No Text) */
+          <div className="animate-in zoom-in duration-500 flex items-center gap-2 w-full">
+              
+              {/* PRIMARY ACTION: Open in Spotify */}
               <a 
                 href={`https://open.spotify.com/playlist/${playlistId}`}
                 target="_blank" 
                 rel="noopener noreferrer"
-                // OLD: className="py-3 px-6 ..."
-                // NEW: Added 'w-full sm:w-auto' for full width tap target on mobile
-                className="py-3 px-6 w-full sm:w-auto bg-dark-pastel-green text-zinc-900 font-bold rounded-full hover:bg-green-400 transition-transform hover:scale-105 shadow-lg"
+                className="flex-grow bg-dark-pastel-green text-zinc-900 font-bold text-xs sm:text-sm py-2 px-3 rounded-lg hover:bg-green-400 transition-all shadow-md flex items-center justify-center whitespace-nowrap"
               >
-                Open in Spotify
+                <span>Open in Spotify</span>
               </a>
+
+              {/* SECONDARY ACTION: Save to Library */}
+              <button
+                onClick={handleSaveToLibrary}
+                disabled={saveStatus === 'saving' || saveStatus === 'saved'}
+                className={`
+                  font-semibold text-xs sm:text-sm py-2 px-3 sm:px-5 rounded-lg transition-all border
+                  flex items-center justify-center whitespace-nowrap
+                  ${saveStatus === 'saved' 
+                    ? 'bg-zinc-700 text-green-400 border-zinc-600 cursor-default'
+                    : saveStatus === 'error'
+                    ? 'bg-red-900/30 text-red-400 border-red-800'
+                    : 'bg-transparent text-stone-100 border-zinc-600 hover:bg-zinc-700 hover:border-zinc-500'
+                  }
+                `}
+              >
+                {saveStatus === 'idle' && <span>Save Playlist</span>}
+                {saveStatus === 'saving' && <span>Saving...</span>}
+                {saveStatus === 'saved' && (
+                  <>
+                    <CheckCircleIcon className="w-4 h-4 mr-1" />
+                    <span>Saved</span>
+                  </>
+                )}
+                {saveStatus === 'error' && <span>Error</span>}
+              </button>
+
+              {/* CLOSE ACTION: X Icon */}
               <button 
                 onClick={onReset}
-                className="text-zinc-400 text-sm hover:text-white underline decoration-zinc-600 underline-offset-4"
+                className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-zinc-500 hover:text-white hover:bg-zinc-700 transition-colors"
+                title="Close and start over"
               >
-                Make another playlist
+                <XMarkIcon className="w-5 h-5" />
               </button>
-            </div>
+
           </div>
         ) : isFailed ? (
           <div className="animate-in shake">

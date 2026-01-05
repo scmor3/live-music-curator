@@ -1,0 +1,2 @@
+ALTER TABLE saved_playlists
+ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
