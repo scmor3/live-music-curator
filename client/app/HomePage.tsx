@@ -507,7 +507,7 @@ export default function HomePage() {
 
   return (
     // --- Page layout: dark background, content centered ---
-    <main className="flex min-h-screen flex-col items-center justify-start lg:justify-center p-4 sm:p-8 bg-pastel-yellow">
+    <main className="flex min-h-screen flex-col items-center justify-start lg:justify-center p-4 sm:p-8 bg-pastel-yellow pt-20 sm:pt-8">
 
       {/* <--- Top Left Button */}
       {user && (
@@ -558,21 +558,21 @@ export default function HomePage() {
       />
       
       {/* --- Centered "card" with a color flush with background --- */}
-      <div className="p-8 w-full max-w-lg text-center">
+      <div className="px-4 py-6 sm:p-8 w-full max-w-lg text-center">
         
         {/* 1. HIDE HEADER WHEN RUNNING */}
         {!jobId && (
           <>
             {/* --- Content with warm, light text colors --- */}
-            <h1 className="text-3xl font-bold text-night-blue mb-2">Live Music Curator</h1>
-            <p className="text-black mb-6">
+            <h1 className="text-3xl sm:text-4xl font-bold text-night-blue mb-3 sm:mb-2">Live Music Curator</h1>
+            <p className="text-black mb-8 sm:mb-6 text-base sm:text-sm leading-relaxed px-2">
               Enter a city and date to create a playlist of artists playing shows today, tomorrow, or whenever!
             </p>
           </>
         )}
 
         {/* --- Form layout wrapper --- */}
-        <div className="flex flex-col items-center gap-4 mt-4 w-full">
+        <div className="flex flex-col items-center gap-5 sm:gap-4 mt-2 sm:mt-4 w-full">
 
           {jobId ? (
             /* MODE A: If a job is running, show the Notebook/Feed */
@@ -613,7 +613,7 @@ export default function HomePage() {
           {/* --- City Autocomplete Wrapper --- */}
           {/* 'relative' is crucial for positioning the dropdown */}
           <div className="w-full max-w-xs relative">
-            <label htmlFor="city-search" className="block text-sm font-medium text-black mb-1">
+            <label htmlFor="city-search" className="block text-sm font-medium text-black mb-2">
               Select a City:
             </label>
             <input 
@@ -647,7 +647,7 @@ export default function HomePage() {
           {/* --- Date Picker --- */}
           {/* This is now a direct child of the 'gap-4' flex container */}
           <div className="w-full max-w-xs">
-            <label htmlFor="date-picker" className="block text-sm font-medium text-black mb-1">
+            <label htmlFor="date-picker" className="block text-sm font-medium text-black mb-2">
               Select a date:
             </label>
             {/* TODO: change date picker from default browser option to avoid greyed out year */}
@@ -672,7 +672,7 @@ export default function HomePage() {
             
             {/* Starts After */}
             <div className="flex-1 min-w-[130px]">
-              <label htmlFor="min-time" className="block text-sm font-medium text-black mb-1">
+              <label htmlFor="min-time" className="block text-sm font-medium text-black mb-2">
                 Starts at or After:
               </label>
               <select
@@ -696,7 +696,7 @@ export default function HomePage() {
 
             {/* Starts Before */}
             <div className="flex-1 min-w-[130px]">
-              <label htmlFor="max-time" className="block text-sm font-medium text-black mb-1">
+              <label htmlFor="max-time" className="block text-sm font-medium text-black mb-2">
                 Starts Before:
               </label>
               <select
@@ -783,7 +783,7 @@ export default function HomePage() {
           <button 
             onClick={handlePlaylistCreation} 
             disabled={isLoading || !selectedCity || !date}
-            className="cursor-pointer py-2 px-4 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-amber-700 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+            className="cursor-pointer py-3 px-6 sm:py-2 sm:px-4 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-amber-700 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-4 sm:mt-2 text-base sm:text-sm"
           >
             Create
           </button>
