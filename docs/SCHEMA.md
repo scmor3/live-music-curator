@@ -1,84 +1,181 @@
-## This document is out of date and requires a comprehensive update
+# Database Schema
 
-# Database Schema Notes
+This document describes the database schema for the Live Music Curator application. The database stores information about cities, playlist generation jobs, and user-saved playlists.
 
-Thinking about the database schema:  
-What is the story?
-User logs in via their spotify account. They choose a city from a list. They choose a date. They choose a number, x (1-5) of songs to listen to from each artist. A list of artists are fetched from some source. For each artist a search is conducted on Spotify in order to return a list of x songs for each artist. A playlist is created on Spotify. Each song is added to the playlist. It could be that first we create a playlist and for each artist we add their x top songs one at a time before going to the next artist. The program in complete once we've added x songs from every artist on the list to the new playlist.
-What are the **nouns** of the user story?
-* The user
-* The user's spotify account
-* A list of cities to choose from
-* The city chosen by the user
-* The date chosen by the user
-* The number of top songs for each artist chosen by the user
-* The list of artists
-* The individual artists in the list
-* The playlist being created
-* The individual songs in the playlist  
+## Overview
 
-What nouns do we not need to store?  
-* The list of cities - it is static and is the same across all userss, so can be a simple configuration file
-* The songs - stored by Spotify in the playlist
+The application uses PostgreSQL with the following extensions:
+- **PostGIS**: For geospatial queries and geography data types
+- **pg_trgm**: For fuzzy text search using trigrams
 
-What are **core nouns** that can contain groups of nouns (fields)?  
-* The User `users` - properties -:
-    * Authentication credentials for login/APIs like `spotify_id`
-* The Curation Request `curation_requests` - properties:
-    * unique user id `user_id`
-    * chosen city `search_city`
-    * chosen date `search_date`
-    * number of top songs from each artist `number_of_songs`
-    * resulting playlist created `playlist_id`
-* resulting list of artists from a curation request `curated_artists`
-    * an id referring to which curation_request the artist is associated with which should be a foreign key `curation_request_id`
-    * Artist Name from source `artist_name_raw`
-    * unique spotify id `spotify_artist_id`
-    * Confidence score - based on popularity score and spelling of results `confidence_score`
+The database consists of three main tables:
+1. `cities` - Geographic city data for search and autocomplete
+2. `playlist_jobs` - Job queue for playlist generation requests
+3. `saved_playlists` - Permanent storage of user-saved playlists
 
-### Slightly more formalized (adding more fields as we go)
-3 tables:  
-1. `users` - stores one row for every person using the app
-    * `id` - primary key to identify each user
-    * `display_name` - Their display name on Spotify or their chosen username for the app
-    * `email` - user's email they use for spotify
-    * `profile_picture` - user's profile picture they use for spotify if any
-    * `spotify_id` - a user's id unique to their spotify profile
-    * `refresh_token` - used to get an access token for spotify authorization
-    * other credentials...
-2. `curation_requests` - stores one row for every search a user performs
-    * `id` - primary key for each request
-    * `user_id` - foreign key that links back to the `users` table
-    * `search_city`
-    * `search_date`
-    * `number_of_songs`
-    * `playlist_id`
-3. `curated_artists` - stores one row for every artist found in every search
-    * `id` - primary key to identify each artist entry
-    * `curation_request_id` - foreign key that links back to the `curation_requests` table
-    * `artist_name_raw` - the artist name in raw text
-    * `spotify_artist_id` - corrensponding unique id for artist on Spotify
-    * `confidence_score` - the result of our matching logic
+---
 
-#### Column rules:
-1. `users`
-    * `id` - data type: SERIAL constraints: PRIMARY KEY
-    * `spotify_id` - data type: VARCHAR(255) constraints: NOT NULL, UNIQUE
-    * `display_name` - data type: VARCHAR(255) constraints: NOT NULL
-    * `email` - data type: VARCHAR(255) constraints: NOT NULL, UNIQUE
-    * `profile_picture` - data type: VARCHAR(255)
-    * `refresh_token` - data type: TEXT, constraints: NOT NULL
-2. `curation_requests`
-    * `id` - data type: constraints: SERIAL PRIMARY KEY
-    * `user_id` - data type: INT constraint: FOREIGN KEY
-    * `search_city` - data type: VARCHAR(255) constraints: NOT NULL
-    * `search_date` - data type: DATE constraints: NOT NULL
-    * `number_of_songs` - data type: INT constraints: NOT NULL
-    * `playlist_id` - data type: TEXT constraint: UNIQUE
-3. `curated_artists`
-    * `id` - data type: SERIAL constraints: PRIMARY KEY
-    * `curation_request_id` - data type: INT constraint: FOREIGN KEY
-    * `artist_name_raw` - data type: VARCHAR(255) constraing: NOT NULL
-    * `spotify_artist_id` - data type: TEXT
-    * `confidence_score` - data type: DECIMAL(5, 2)
+## Tables
 
+### `cities`
+
+Stores city data used for location-based searches and autocomplete functionality.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | `SERIAL` | PRIMARY KEY | Unique identifier for each city |
+| `name` | `VARCHAR(255)` | NOT NULL, UNIQUE | Full city name (e.g., "Austin, TX" or "Austin, Texas") |
+| `latitude` | `DECIMAL(9, 6)` | NOT NULL | Latitude coordinate |
+| `longitude` | `DECIMAL(9, 6)` | NOT NULL | Longitude coordinate |
+| `city` | `VARCHAR(255)` | NULL | City name component (e.g., "Austin") |
+| `admin_name` | `VARCHAR(255)` | NULL | Administrative region (e.g., "Texas") |
+| `country` | `VARCHAR(255)` | NULL | Country name |
+| `population` | `INTEGER` | NULL | City population (used for search ranking) |
+| `geography` | `GEOGRAPHY(Point, 4326)` | NULL | PostGIS geography point for spatial queries |
+| `created_at` | `TIMESTAMPTZ` | DEFAULT NOW() | Timestamp when city was added |
+
+**Indexes:**
+- `idx_cities_geography` (GIST index on `geography`) - For fast spatial proximity queries
+- `idx_cities_name_trgm` (GIN index on `name` using trigrams) - For fast fuzzy text search
+- `idx_cities_population_desc` (B-tree index on `population DESC`) - For ranking cities by population
+
+**Constraints:**
+- `cities_name_unique` - Ensures each city name is unique
+
+---
+
+### `playlist_jobs`
+
+Queue table for playlist generation jobs. Tracks the status, inputs, outputs, and progress of each playlist creation request.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | `BIGINT` | PRIMARY KEY, GENERATED BY DEFAULT AS IDENTITY | Unique job identifier |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT NOW() | Timestamp when job was created |
+| `updated_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT NOW() | Timestamp when job was last updated (auto-updated via trigger) |
+| `status` | `TEXT` | NOT NULL, DEFAULT 'pending' | Job status: `'pending'`, `'building'`, `'complete'`, or `'failed'` |
+| `owner_id` | `UUID` | NULL, REFERENCES `auth.users(id)` | User who created the job (NULL for anonymous users) |
+| | | | **Job Inputs** |
+| `search_city` | `TEXT` | NOT NULL | City name for the search |
+| `search_date` | `DATE` | NOT NULL | Target date for events |
+| `latitude` | `NUMERIC(9, 6)` | NOT NULL | Latitude for location-based search |
+| `longitude` | `NUMERIC(9, 6)` | NOT NULL | Longitude for location-based search |
+| `number_of_songs` | `INTEGER` | NOT NULL, DEFAULT 2 | Number of songs to include per artist |
+| `excluded_genres` | `TEXT[]` | NULL | Array of genre names to exclude |
+| `min_start_time` | `INTEGER` | DEFAULT 0 | Minimum event start time (hours, 0-24) |
+| `max_start_time` | `INTEGER` | DEFAULT 24 | Maximum event start time (hours, 0-24) |
+| | | | **Job Outputs** |
+| `playlist_id` | `TEXT` | NULL | Spotify playlist ID (created when job completes) |
+| `error_message` | `TEXT` | NULL | Error message if job failed |
+| | | | **Progress Tracking** |
+| `log_history` | `TEXT[]` | DEFAULT '{}' | Array of log messages for live activity feed |
+| `total_artists` | `INTEGER` | DEFAULT 0 | Total number of artists found |
+| `processed_artists` | `INTEGER` | DEFAULT 0 | Number of artists processed so far |
+| `events_data` | `JSONB` | DEFAULT '[]' | Array of event objects with venue, tickets, date, image, etc. |
+
+**Indexes:**
+- `idx_jobs_status_created_at` (B-tree on `status, created_at`) - For efficiently querying jobs by status
+- `idx_playlist_jobs_owner_id` (B-tree on `owner_id`) - For fast retrieval of user's jobs
+
+**Triggers:**
+- `on_job_update` - Automatically updates `updated_at` column before any UPDATE
+
+**Notes:**
+- Jobs are processed asynchronously by worker processes
+- The `status` field tracks the job lifecycle from creation to completion
+- `log_history`, `total_artists`, and `processed_artists` enable live progress tracking in the UI
+- `events_data` stores the rich event information (venue, ticket links, dates, images) for the Concert List UI
+
+---
+
+### `saved_playlists`
+
+Permanent storage for playlists that users have explicitly saved to their library. This decouples the "User Library" from the ephemeral "Job History" in `playlist_jobs`.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | `BIGINT` | PRIMARY KEY, GENERATED BY DEFAULT AS IDENTITY | Unique identifier for saved playlist |
+| `user_id` | `UUID` | NOT NULL, REFERENCES `auth.users(id)` ON DELETE CASCADE | User who owns this playlist |
+| `original_job_id` | `BIGINT` | NULL, REFERENCES `playlist_jobs(id)` ON DELETE SET NULL | Reference to original job (optional, for debugging lineage) |
+| | | | **Core Metadata** |
+| `spotify_playlist_id` | `TEXT` | NOT NULL | Spotify playlist ID |
+| `name` | `TEXT` | NOT NULL | Playlist name (e.g., "Austin 12-31-2025 live music") |
+| `city_name` | `TEXT` | NOT NULL | City name (e.g., "Austin, TX") |
+| `playlist_date` | `DATE` | NOT NULL | Date associated with the playlist |
+| | | | **Filter Snapshot** |
+| `events_snapshot` | `JSONB` | NOT NULL, DEFAULT '[]' | Event data visible at time of creation (venue, tickets, etc.) |
+| `latitude` | `DECIMAL(9, 6)` | NULL | Latitude used for the original search |
+| `longitude` | `DECIMAL(9, 6)` | NULL | Longitude used for the original search |
+| `min_start_time` | `INTEGER` | DEFAULT 0 | Minimum event start time filter |
+| `max_start_time` | `INTEGER` | DEFAULT 24 | Maximum event start time filter |
+| `excluded_genres` | `TEXT[]` | NULL | Array of excluded genres |
+| | | | **Timestamps** |
+| `created_at` | `TIMESTAMPTZ` | DEFAULT NOW() | When playlist was saved |
+| `updated_at` | `TIMESTAMPTZ` | DEFAULT NOW() | Last update timestamp |
+
+**Indexes:**
+- `idx_saved_playlists_user` (B-tree on `user_id`) - For fast retrieval of "My Playlists"
+
+**Constraints:**
+- `unique_user_job` (UNIQUE on `user_id, original_job_id`) - Prevents saving the same job twice
+
+**Notes:**
+- Saved playlists preserve the exact state of events and filters at the time they were saved
+- Users can regenerate saved playlists, which updates the playlist in-place while preserving the saved record
+- When a user account is deleted, all their saved playlists are automatically deleted (CASCADE)
+
+---
+
+## Database Functions
+
+### `handle_updated_at()`
+
+**Type:** Trigger Function  
+**Language:** PL/pgSQL
+
+Automatically updates the `updated_at` column to the current timestamp before any UPDATE operation on tables that use this trigger.
+
+**Usage:**
+Applied to `playlist_jobs` table via the `on_job_update` trigger.
+
+---
+
+## Schema Evolution
+
+The database schema has evolved significantly from the original design:
+
+1. **Original schema** (migrations 001-003): Included a `users` table with Spotify authentication and separate `curation_requests` and `curated_artists` tables
+2. **Public curator refactor** (migration 004): Removed user authentication, making the service publicly accessible
+3. **Cities table** (migrations 005-010): Added city data storage with fuzzy search capabilities
+4. **Playlist jobs** (migration 011-023): Replaced `curation_requests` with `playlist_jobs` for better job queue management
+5. **User authentication** (migration 024): Re-introduced user association via Supabase Auth (`auth.users`)
+6. **Saved playlists** (migrations 025-029): Added persistent user library separate from job history
+
+The current schema supports both anonymous and authenticated users, with optional user-specific features like saved playlists.
+
+---
+
+## Relationships
+
+```
+auth.users (Supabase Auth)
+  └─> playlist_jobs.owner_id (optional, NULL for anonymous)
+  └─> saved_playlists.user_id (required)
+
+playlist_jobs
+  └─> saved_playlists.original_job_id (optional reference)
+```
+
+---
+
+## Key Design Decisions
+
+1. **Separation of Jobs and Saved Playlists**: Jobs are ephemeral and track the generation process, while saved playlists are permanent user data. This allows users to save playlists without keeping all job history indefinitely.
+
+2. **Geospatial Data**: Using PostGIS `GEOGRAPHY` type enables efficient proximity-based searches for finding nearby cities and events.
+
+3. **Fuzzy Search**: The trigram index on city names allows users to find cities even with typos or partial matches.
+
+4. **Progress Tracking**: The `log_history`, `total_artists`, and `processed_artists` fields enable real-time progress updates in the UI without requiring polling of external APIs.
+
+5. **Event Data Snapshot**: Saving `events_snapshot` in `saved_playlists` preserves the exact events visible when the playlist was created, even if events change or expire later.
