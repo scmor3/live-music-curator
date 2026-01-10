@@ -1,9 +1,7 @@
-## This document is out of date and requires a comprehensive update
-
 # General Notes (high level)
 
 What?  
-A web app that generates a Spotify playlist for the user of artists performing on a selected date in a selected city.
+A web app that generates a Spotify playlist of artists performing on a selected date in a selected city. The playlist is created on a master Spotify account and users can save it to their library.
 
 Why?  
 I want to have a simple passive way of exploring what live music is available in a given place on a given date. Other solutions don't solve this in the way I want. Some other solutions include:
@@ -14,42 +12,61 @@ I want to have a simple passive way of exploring what live music is available in
 I also want to get up to date on modern popular tech stacks and refresh my software development skills, so I will use popular javascript frameworks and other popular tools for implementation.
 
 How?  
-The user logs in via Spotify, inputs city/state, a date, and how many songs they want to listen to from each artist (let’s call that number x - between 1 and 5). The app creates a playlist in the user’s Spotify account containing the top x songs from each artist playing in the input city on the input date.  
-Important Note: Data copmleteness is very important to me. I don't want to use the most convenient data source for live music events only for the user to have a playlist of the big bands playing the big arenas. I want the user to get a playlist that exposes them to small and big artists alike. The best dataset I've seen so far is from bandsintown and even they are missing what's going on in many local venues for each city. They also don't have a public API that allows us to easily pull a list of live shows in a city on a given date. We could scrape their website, but to start I think we'll focus on figuring out the best way to make the most complete list of artists for one city on each day and go from there. Maybe that starts pretty manually.
+The user can sign in anonymously or create an account via Supabase Auth (email/password). They input a city (via autocomplete search or location services), a date, and optionally filter by excluded genres and time range. The app scrapes Bandsintown for all artists playing in that city on that date, matches them to Spotify artists, and creates a playlist on a master Spotify account containing the top 1 song from each artist (number is currently hardcoded). Users can save playlists to their personal library and refresh them later.
 
-Edge cases:
-* A given artist has less than x songs available on Spotify.
-    * Do a check and pull all songs if artist has equal to or less than x songs.
+Technical Architecture:
+* **Frontend**: Next.js (React/TypeScript) with Supabase client for authentication
+* **Backend**: Express.js server with PostgreSQL database (Supabase)
+* **Data Source**: Bandsintown scraper (uses got-scraping library first, falls back to Playwright with browser automation if blocked)
+* **Authentication**: Supabase Auth - users can sign in anonymously or with email/password
+* **Job Queue**: Asynchronous background job processing with worker threads. Jobs are stored in `playlist_jobs` table with status: pending, building, complete, or failed
+* **Database**: PostgreSQL with PostGIS extension for geographic queries, pg_trgm for fuzzy city search
+* **Spotify Integration**: Uses a master Spotify account with refresh token to create playlists. Playlists are created on this master account, not user accounts
+* **City Search**: Uses trigram similarity index for fast fuzzy autocomplete. Also supports geographic coordinate lookup using PostGIS
+
+Data Completeness:
+Data completeness is very important to me. I don't want to use the most convenient data source for live music events only for the user to have a playlist of the big bands playing the big arenas. I want the user to get a playlist that exposes them to small and big artists alike. The app scrapes Bandsintown's API by paginating through all available events for a given date and location. The scraper uses got-scraping (lightweight HTTP requests) first, but falls back to Playwright (full browser automation) if it gets blocked by Cloudflare. This ensures we capture as many events as possible, including smaller local venues.
+
+Edge cases (implemented):
+* A given artist has less than 1 song available on Spotify.
+    * Automatically handled - the `slice(0, number_of_songs)` will return whatever is available (0 to number_of_songs)
 * Misspelling in search for artist.
-    * Use some heuristic to find the most likely match such as popularity score.
-* Artist doesn’t exist on spotify, but there are still search results.
-    * Use some heuristic such as how close results are in spelling to search input.
-* The same search is done more than once by the same user.
-    * check if the first playlist still exists. If same number of songs input, check if there are any new artists playing in the input city and on the input date and add their top songs to the playlist. If different number of songs, create new playlist. If playlist doesn't exist, just create new playlist.
-* User spams creating playlists
-    * limit number of playlists that can be created per hour or day or something.
-* "Wes Urbaniak Music" Should be "Wes Urbaniak" How do we catch this? Also "ariana saraha and flight behavior"
+    * Uses exact match first (case-insensitive), then Levenshtein distance with threshold of 1 character difference for fuzzy matching
+* Artist doesn't exist on spotify, but there are still search results.
+    * If no exact or close match found (within Levenshtein threshold), the artist is skipped and logged
+* Duplicate artists.
+    * Deduplicated by artist name (case-insensitive) before processing. Also tracks processed Spotify artist IDs to avoid adding same artist twice with different name variations
+* The same search is done more than once.
+    * Job queue system checks for existing jobs with same city, date, filters. If found, returns existing job instead of creating duplicate. Users can refresh saved playlists to regenerate with updated data
+* Genre filtering.
+    * Users can exclude genres. System uses genre synonym expansion (e.g., excluding "hip hop" also excludes "rap") to catch related genres
+* Time filtering.
+    * Users can specify min and max start times (in 24-hour format) to filter events by when they start
+* Empty playlists.
+    * If no tracks are successfully added, the playlist is automatically deleted from Spotify and job is marked as failed
+* Rate limiting and retries.
+    * Handles Spotify API rate limits (429) and server errors (5xx) with exponential backoff retry logic (max 3 retries per artist)
+* Zombie jobs.
+    * Background workers detect jobs stuck in "building" status for >30 minutes and mark them as failed
+* Cloudflare blocking.
+    * Scraper detects Cloudflare blocks and automatically falls back from lightweight HTTP requests to full browser automation (Playwright)
 
-Steps:
-1. Initiate new github repo
-2. Add folders that will contain backend logic, frontend logic, and a place to store documents related to the project for viewers to get more context
-3. 
-
-
-random to do's in the future:
-* change users.number_of_songs column in database to users.number_of_tracks
+Current Limitations:
+* Number of songs per artist is hardcoded to 1 (not configurable by user)
+* Playlists are created on master Spotify account, not user's personal account (users save references in their library instead)
+* Anonymous users can create playlists but must sign up to save them to their library
 
 Potential future features:
+* Make number of songs per artist configurable (1-5)
 * Connect with other people looking for live music in a given city
-* Filter by genre.
-* Use location services to suggest user's location.
+* Filter by included genres (currently only supports excluding)
 * expand past spotify to apple music, sound cloud, youtube, etc.
 * get smaller venues to list their shows or scrape their websites.
 * "pay when you feel like it" button. adds $1 every time a playlist is created. Can pay some or all of it down whenever they want.
-* could save API calls by only creating a playlist once for a given city and date and having other users that ask for that playlist to follow the existing playlist rather than create a new one in their account. The playlist may need to be updated if a new user requests it on a date after the date of its original creation.
 * Query multiple APIs to aggregate live shows in a particular city e.g. Songkick *and* bandsintown
 * Users can subscribe to a particular city and just get a playlist made every day or weekend or whatever
 * connect fans to artists somehow - maybe through location sharing during concerts to build 'points' with the artist and get free merch or something
 * build out the venue playlists… their social manager may be convinced to sponsor an auto updating playlist for their venue.
 * Use LLMs to gather smaller venue events
 * have playlists created that day show up around the front page for users to follow if they want
+* Create playlists directly in user's Spotify account instead of master account (requires Spotify OAuth integration)
