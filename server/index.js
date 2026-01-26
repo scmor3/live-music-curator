@@ -1359,7 +1359,7 @@ app.post('/api/my-playlists/:id/refresh', async (req, res) => {
  * Starts the queue processing when the server boots.
  */
 function startWorker() {
-  const CONCURRENT_WORKERS = 4;
+  const CONCURRENT_WORKERS = 16;
   logger.info(`Starting ${CONCURRENT_WORKERS} concurrent worker loops...`);
 
   // If the server just restarted, any job marked 'building' is actually dead.

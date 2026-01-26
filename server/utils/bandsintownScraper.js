@@ -14,7 +14,7 @@ const ENABLE_DEBUG = process.env.ENABLE_DEBUG_SCRAPER === 'true'; // Set to fals
 // We allow multiple lightweight workers, but STRICTLY limit heavyweight browsers.
 // On a 512MB RAM server, 1 browser is the safe limit.
 let activeBrowserCount = 0;
-const MAX_BROWSERS = 1;
+const MAX_BROWSERS = 6;
 
 // Helper function to pause execution
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
