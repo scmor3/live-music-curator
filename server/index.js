@@ -1335,7 +1335,8 @@ app.get('/api/playlists/status', async (req, res) => {
         log_history,
         total_artists,
         processed_artists,
-        events_data
+        events_data,
+        created_at
       FROM playlist_jobs 
       WHERE id = ${jobId};
     `;
@@ -1345,6 +1346,18 @@ app.get('/api/playlists/status', async (req, res) => {
     }
 
     const job = jobResult[0];
+
+    // Calculate queue position: count how many pending jobs were created before this one
+    let queuePosition = 0;
+    if (job.status === 'pending') {
+      const queueCount = await sql`
+        SELECT COUNT(*) as count
+        FROM playlist_jobs
+        WHERE status = 'pending'
+        AND created_at < ${job.created_at}
+      `;
+      queuePosition = queueCount[0]?.count || 0;
+    }
 
     // Send the whole job status back to the frontend.
     // The frontend will decide what to do with this.
@@ -1357,7 +1370,8 @@ app.get('/api/playlists/status', async (req, res) => {
         total: job.total_artists || 0,
         current: job.processed_artists || 0
       },
-      events: job.events_data || []
+      events: job.events_data || [],
+      queuePosition: queuePosition
     });
 
   } catch (error) {
