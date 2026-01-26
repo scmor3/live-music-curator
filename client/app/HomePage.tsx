@@ -524,8 +524,19 @@ export default function HomePage() {
       )}
       {/* <--- Top Left Button END */}
 
-      {/* --- Top Right Auth Button --- */}
-      <div className="absolute top-4 right-4 z-10">
+      {/* --- Top Right Auth Button & Donate Button --- */}
+      <div className="absolute top-4 right-4 z-10 flex items-center gap-3">
+        {/* Donate Button - Always visible */}
+        <a
+          href={process.env.NEXT_PUBLIC_DONATE_URL || 'https://buy.stripe.com/your-payment-link-here'}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="px-4 py-2 bg-amber-600 text-zinc-900 text-sm font-semibold rounded-full hover:bg-amber-700 shadow-md transition-all"
+        >
+          Donate
+        </a>
+        
+        {/* Auth Button */}
         {user && user.is_anonymous ? (
           <button 
             onClick={() => setIsAuthModalOpen(true)}
