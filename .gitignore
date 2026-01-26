@@ -149,4 +149,7 @@ server/utils/testScraperPlaywright.js
 # prompts
 docs/prompts.md
 
-
+# cursor plans
+docs/BATCHING_ANALYSIS.md
+docs/BATCHING_IMPLEMENTATION.md
+docs/FRONTEND_CHANGES_NEEDED.md

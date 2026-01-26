@@ -232,6 +232,9 @@ export default function LiveActivityFeed({
 
   const isComplete = status === 'complete' && !!playlistId;
   const isFailed = status === 'failed' || !!errorMessage;
+  
+  // Check if there are any warnings in the logs
+  const hasWarnings = logs.some(log => log.startsWith('WARNING:'));
 
   useEffect(() => {
     if (isComplete) {
@@ -283,6 +286,16 @@ export default function LiveActivityFeed({
       <div className={`p-3 border-b border-zinc-800 transition-colors duration-700 ${
         isComplete ? 'bg-zinc-800' : isFailed ? 'bg-red-900/20' : 'bg-night-blue'
       }`}>
+        
+        {/* Warning Banner - Show if there are batch failures */}
+        {hasWarnings && isComplete && (
+          <div className="mb-3 p-2 bg-yellow-900/20 border border-yellow-600/50 rounded-lg">
+            <div className="flex items-center gap-2 text-yellow-200 text-xs">
+              <ExclamationCircleIcon className="w-4 h-4 flex-shrink-0" />
+              <span>Some tracks may be missing from the playlist due to errors. Check the feed for details.</span>
+            </div>
+          </div>
+        )}
         
         {isComplete ? (
           /* 3. CLEAN SINGLE ROW LAYOUT (No Text) */
@@ -393,11 +406,28 @@ export default function LiveActivityFeed({
               artistName = parts[0].trim();
               text = artistName;
               subText = 'Tracks not found';
+            } else if (log.startsWith('WARNING:')) {
+              type = 'warning';
+              text = log.replace('WARNING:', '').trim();
+              // Warnings don't have artist names, so skip event matching
             }
 
             // FIND RICH DATA (Image & Link)
             const eventData = artistName ? getEventForLog(artistName) : null;
             const hasLink = !!(eventData && eventData.url);
+
+            // Special rendering for warnings (full-width banner style)
+            if (type === 'warning') {
+              return (
+                <div 
+                  key={index}
+                  className="flex items-start gap-3 p-3 bg-yellow-900/20 border border-yellow-600/50 rounded-lg animate-in slide-in-from-bottom-2 duration-300"
+                >
+                  <ExclamationCircleIcon className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+                  <span className="text-yellow-200 text-sm leading-relaxed flex-1">{text}</span>
+                </div>
+              );
+            }
 
             return (
               <div 
@@ -455,6 +485,7 @@ export default function LiveActivityFeed({
                     ${type === 'info' ? 'text-blue-200 whitespace-normal italic text-sm' : 'truncate'}
                     ${type === 'success' ? 'text-stone-100' : ''}
                     ${type === 'skipped' ? 'text-zinc-400' : ''}
+                    ${type === 'warning' ? 'text-yellow-200' : ''}
                   `}>
                     {text}
                   </span>

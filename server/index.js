@@ -258,6 +258,14 @@ function formatHourShort(hour) {
 async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, maxStartTime, workerId) {
   // Add log prefix for easier tracing
   const logPrefix = `[Worker ${workerId}]`;
+  
+  // Rate limiting: Delay between Spotify API calls to prevent 429 errors
+  // With 16 concurrent workers, we need to throttle requests
+  // Spotify allows ~30 req/sec, so with 16 workers: 30/16 = ~1.9 req/sec per worker
+  // Adding 500ms delay = 2 req/sec per worker = 32 req/sec total (slightly over but safer with retries)
+  // Can be overridden with SPOTIFY_API_DELAY_MS env var (in milliseconds)
+  const SPOTIFY_API_DELAY_MS = parseInt(process.env.SPOTIFY_API_DELAY_MS || '500', 10);
+  
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
   const rawEventsList = await scrapeBandsintown(date, latitude, longitude, workerId);
@@ -444,6 +452,54 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // track total number of tracks added to see if we added any at all
   let tracksAddedCount = 0;
 
+  // --- BATCHING SYSTEM FOR OPTION A ---
+  // Collect track URIs in batches to reduce API calls
+  // Spotify allows up to 100 tracks per POST request
+  const BATCH_SIZE = 100;
+  const trackBatch = []; // Array of track URIs to add
+  const batchArtistNames = []; // Track which artists are in current batch (for error handling)
+  
+  // Helper function to flush the current batch to Spotify
+  const flushBatch = async () => {
+    if (trackBatch.length === 0) return;
+    
+    try {
+      // Rate limiting: Add delay before batch POST request
+      await sleep(SPOTIFY_API_DELAY_MS);
+      
+      await axios.post(
+        `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+        { uris: trackBatch },
+        axiosConfig
+      );
+      
+      logger.info(`${logPrefix} [BATCH] Successfully added ${trackBatch.length} tracks to playlist (${batchArtistNames.length} artists)`);
+      tracksAddedCount += trackBatch.length;
+      
+      // Clear the batch
+      trackBatch.length = 0;
+      batchArtistNames.length = 0;
+    } catch (batchError) {
+      const batchStatus = batchError.response ? batchError.response.status : null;
+      logger.error(`${logPrefix} [BATCH] Failed to add ${trackBatch.length} tracks (${batchArtistNames.length} artists). Status: ${batchStatus}`);
+      
+      // Log batch failure to frontend so user knows some tracks may be missing
+      const failedArtistsList = batchArtistNames.slice(0, 5).join(', '); // Show first 5 artists
+      const moreArtists = batchArtistNames.length > 5 ? ` and ${batchArtistNames.length - 5} more` : '';
+      await updateJobLog(
+        jobId,
+        `WARNING: Failed to add tracks for ${batchArtistNames.length} artists (${failedArtistsList}${moreArtists}). Some tracks may be missing from playlist.`,
+        null, // Don't update progress count
+        null
+      );
+      
+      // Clear the batch even on failure to prevent retrying the same batch
+      trackBatch.length = 0;
+      batchArtistNames.length = 0;
+    }
+  };
+  // --- END BATCHING SYSTEM ---
+
   // --- Loop over uniqueEvents objects ---
   for (let i = 0; i < uniqueEvents.length; i++) {
     const eventObj = uniqueEvents[i];
@@ -461,6 +517,12 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     
     // await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueEvents.length);
     logger.info(`${logPrefix} [${i + 1}/${uniqueEvents.length}] Processing artist: "${artistName}"`);
+    
+    // Rate limiting: Add delay before making API call (except on retries)
+    if (i > 0 || retryCounts[artistName] === undefined) {
+      await sleep(SPOTIFY_API_DELAY_MS);
+    }
+    
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -544,6 +606,9 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         // If not, this is a new artist. Add them to our Set.
         processedArtistIds.add(spotifyArtistId);
         
+        // Rate limiting: Add delay before top-tracks API call
+        await sleep(SPOTIFY_API_DELAY_MS);
+        
         const topTracksResponse = await axios.get(
           `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -553,17 +618,22 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         const trackUris = tracksToAdd.map(track => track.uri);
 
         if (trackUris.length > 0) {
-          await axios.post(
-            `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
-            { uris: trackUris },
-            axiosConfig
-          );
           // Use bestMatch.name for the log since artistName can be slightly different
           const logName = artistName;
+          
+          // OPTION A: Log artist immediately (before batching POST)
+          // This makes artists appear in feed faster
           await updateJobLog(jobId, `ARTIST:${logName}`, i, uniqueEvents.length);
-          logger.info(`${logPrefix}   -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
+          logger.info(`${logPrefix}   -> Found ${trackUris.length} tracks for "${logName}". Adding to batch...`);
 
-          tracksAddedCount += trackUris.length;
+          // Add tracks to batch
+          trackBatch.push(...trackUris);
+          batchArtistNames.push(logName);
+
+          // If batch is full, flush it immediately
+          if (trackBatch.length >= BATCH_SIZE) {
+            await flushBatch();
+          }
         } else {
           logger.info(`${logPrefix}   -> Found artist, but they have no top tracks. Skipping track add.`);
           await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, i, uniqueEvents.length);
@@ -594,9 +664,16 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 
           if (status === 429) {
             // It's a rate-limit error, check for the 'retry-after' header
-            const retryAfterSeconds = error.response.headers['retry-after'] || 5; 
-            waitMs = Number(retryAfterSeconds) * 1000;
-            waitReason = `429 rate limit`;
+            const retryAfterSeconds = error.response?.headers?.['retry-after'] || 
+                                     error.response?.headers?.['Retry-After'] || 5; 
+            // Use exponential backoff: base wait time * 2^retryCount
+            // This prevents hammering the API if we're consistently hitting limits
+            const exponentialMultiplier = Math.pow(2, currentRetries);
+            waitMs = Math.max(
+              Number(retryAfterSeconds) * 1000 * exponentialMultiplier,
+              5000 // Minimum 5 seconds
+            );
+            waitReason = `429 rate limit (exponential backoff)`;
           }
 
           logger.warn(`${logPrefix} Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
@@ -614,6 +691,12 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         logger.error(`${logPrefix} Error processing artist "${artistName}":`, error.message);
       }
     }
+  }
+
+  // Flush any remaining tracks in the batch before completing
+  if (trackBatch.length > 0) {
+    logger.info(`${logPrefix} [BATCH] Flushing final batch of ${trackBatch.length} tracks (${batchArtistNames.length} artists)...`);
+    await flushBatch();
   }
 
   await updateJobLog(jobId, `Curation complete for ${city} on ${prettyDate}`, uniqueEvents.length, uniqueEvents.length);
