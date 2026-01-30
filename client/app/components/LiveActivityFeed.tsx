@@ -37,6 +37,7 @@ type LiveActivityFeedProps = {
   jobId: string;
   isAnonymous?: boolean;
   onAuthTrigger?: () => void;
+  queuePosition?: number | null;
 };
 
 export default function LiveActivityFeed({ 
@@ -51,7 +52,8 @@ export default function LiveActivityFeed({
   onReset,
   jobId,
   isAnonymous,
-  onAuthTrigger
+  onAuthTrigger,
+  queuePosition = null
 }: LiveActivityFeedProps) {
   
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -115,13 +117,29 @@ export default function LiveActivityFeed({
   useEffect(() => {
     if (visibleLogs.length > 0) return; 
 
-    const hypeMessages = [
-      'Tuning the guitars...',
-      'Checking sound levels...',
-      'Scouting local venues...',
-      'Waking up the drummer...',
-      'Finding the hidden gems...'
-    ];
+    // Different messages based on status
+    const hypeMessages = status === 'pending' 
+      ? [
+          'Joining the queue...',
+          'Waiting for other playlists to finish...',
+          'Respecting Spotify rate limits...',
+          'Almost there...',
+          'Getting ready to curate...'
+        ]
+      : [
+          'Tuning the guitars...',
+          'Checking sound levels...',
+          'Scouting local venues...',
+          'Waking up the drummer...',
+          'Finding the hidden gems...',
+          'Restringing the bass...',
+          'Soundchecking the mic...',
+          'Polishing the cymbals...',
+          'Loading the tour bus...',
+          'Setting the setlist...',
+          'Untangling the cables...',
+          'Finding the guitar pick...'
+        ];
     let i = 0;
     const interval = setInterval(() => {
       setHypeText(hypeMessages[i % hypeMessages.length]);
@@ -129,7 +147,7 @@ export default function LiveActivityFeed({
     }, 2000); 
 
     return () => clearInterval(interval);
-  }, [visibleLogs.length]);
+  }, [visibleLogs.length, status]);
 
   // 2. INGESTION (Modified for Instant Load)
   useEffect(() => {
@@ -357,9 +375,29 @@ export default function LiveActivityFeed({
           </div>
         ) : (
           <>
-            <h2 className="text-xl font-bold text-pastel-yellow mb-1 tracking-wide animate-pulse">
-              {status === 'pending' ? 'Queueing...' : 'Curating...'}
-            </h2>
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <h2 className="text-xl font-bold text-pastel-yellow tracking-wide animate-pulse">
+                {status === 'pending' ? 'Queueing...' : 'Curating...'}
+              </h2>
+              {status === 'pending' && (
+                <div className="flex gap-1">
+                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                </div>
+              )}
+            </div>
+            
+            {/* Queue Position Display */}
+            {status === 'pending' && queuePosition !== null && queuePosition >= 0 && (
+              <div className="mb-3 p-3 bg-amber-900/20 border border-amber-600/50 rounded-lg">
+                <div className="flex items-center gap-2 text-amber-200 text-xs">
+                  <InformationCircleIcon className="w-4 h-4 flex-shrink-0" />
+                  <span>You're #{Number(queuePosition) + 1} in queue. We're processing other playlists to avoid overloading Spotify.</span>
+                </div>
+              </div>
+            )}
+
             <p className="text-zinc-400 text-sm mb-4">
               {totalCount > 0 
                 ? `Processed ${displayCount} of ${totalCount} artists` 
@@ -367,10 +405,14 @@ export default function LiveActivityFeed({
             </p>
 
             <div className="w-full max-w-[16rem] h-2 bg-zinc-700/50 rounded-full mx-auto overflow-hidden relative">
-              <div 
-                className="bg-dark-pastel-green h-full transition-all duration-300 ease-out rounded-full shadow-[0_0_10px_rgba(74,222,128,0.5)]"
-                style={{ width: `${effectivePercent}%` }}
-              />
+              {status === 'pending' ? (
+                <div className="bg-amber-500 h-full rounded-full animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.5)]" style={{ width: '30%' }} />
+              ) : (
+                <div 
+                  className="bg-dark-pastel-green h-full transition-all duration-300 ease-out rounded-full shadow-[0_0_10px_rgba(74,222,128,0.5)]"
+                  style={{ width: `${effectivePercent}%` }}
+                />
+              )}
             </div>
           </>
         )}
@@ -382,9 +424,48 @@ export default function LiveActivityFeed({
         className="flex-1 overflow-y-auto bg-zinc-900 p-4 scroll-smooth relative"
       >
         {visibleLogs.length === 0 && !isFailed && (
-          <div className="h-full flex flex-col items-center justify-center opacity-50">
-             <div className="w-8 h-8 border-4 border-zinc-700 border-t-dark-pastel-green rounded-full animate-spin mb-4"></div>
-             <p className="text-zinc-500 text-sm font-mono">{hypeText}</p>
+          <div className="h-full flex flex-col items-center justify-center opacity-50 relative overflow-hidden">
+            {status === 'pending' ? (
+              <>
+                {/* Floating music notes animation */}
+                <div className="absolute inset-0 pointer-events-none">
+                  {[...Array(3)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="absolute opacity-20 animate-bounce"
+                      style={{
+                        left: `${20 + i * 30}%`,
+                        top: `${30 + i * 20}%`,
+                        animationDuration: `${2 + i * 0.5}s`,
+                        animationDelay: `${i * 0.3}s`
+                      }}
+                    >
+                      <MusicalNoteIcon className="w-4 h-4 text-amber-500" />
+                    </div>
+                  ))}
+                </div>
+                <div className="relative mb-6 z-10">
+                  <div className="w-16 h-16 border-4 border-amber-600/30 border-t-amber-500 rounded-full animate-spin"></div>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <MusicalNoteIcon className="w-6 h-6 text-amber-500 animate-pulse" />
+                  </div>
+                </div>
+                <p className="text-amber-400 text-sm font-mono mb-2 z-10">{hypeText}</p>
+                {queuePosition !== null && queuePosition >= 0 && (
+                  <p className="text-zinc-600 text-xs z-10">Position in queue: #{Number(queuePosition) + 1}</p>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="relative mb-6">
+                  <div className="w-16 h-16 border-4 border-zinc-700 border-t-dark-pastel-green rounded-full animate-spin"></div>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <MusicalNoteIcon className="w-6 h-6 text-dark-pastel-green animate-pulse" />
+                  </div>
+                </div>
+                <p className="text-zinc-500 text-sm font-mono">{hypeText}</p>
+              </>
+            )}
           </div>
         )}
 
