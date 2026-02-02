@@ -45,6 +45,152 @@ const logger = {
 
 logger.info("--- RUNNING LATEST INDEX.JS (DATABASE_URL version) ---");
 
+// --- GLOBAL RATE LIMIT COORDINATION ---
+// Shared state across all workers to coordinate rate limiting
+// When any worker gets a 429, all workers pause until rate limit resets
+// State is persisted to database to survive server restarts
+const globalRateLimit = {
+  isLimited: false,
+  expiresAt: null, // Timestamp when rate limit expires
+  retryAfter: null // Seconds to wait (from Retry-After header)
+};
+
+/**
+ * Load rate limit state from database on server startup
+ * This prevents making requests immediately after restart if we were rate limited
+ * Loads the rate limit state for the currently selected account
+ */
+async function loadRateLimitFromDatabase() {
+  try {
+    const result = await sql`
+      SELECT rate_limit_expires_at 
+      FROM rate_limit_state 
+      WHERE account_type = ${CURRENT_ACCOUNT_TYPE}
+    `;
+    
+    if (result.length > 0 && result[0].rate_limit_expires_at) {
+      const expiresAt = new Date(result[0].rate_limit_expires_at).getTime();
+      const now = Date.now();
+      
+      if (expiresAt > now) {
+        // Rate limit is still active
+        globalRateLimit.isLimited = true;
+        globalRateLimit.expiresAt = expiresAt;
+        const remainingSeconds = Math.ceil((expiresAt - now) / 1000);
+        globalRateLimit.retryAfter = remainingSeconds;
+        logger.warn(`[RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Loaded active rate limit from database. Expires in ${remainingSeconds}s (at ${new Date(expiresAt).toISOString()})`);
+      } else {
+        // Rate limit expired, clear it
+        await sql`DELETE FROM rate_limit_state WHERE account_type = ${CURRENT_ACCOUNT_TYPE}`;
+        logger.info(`[RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Found expired rate limit in database. Cleared.`);
+      }
+    }
+  } catch (error) {
+    // Table might not exist yet, that's okay
+    logger.debug(`[RATE-LIMIT] Could not load rate limit from database: ${error.message}`);
+  }
+}
+
+/**
+ * Save rate limit state to database so it persists across restarts
+ * Saves the rate limit state for the currently selected account
+ */
+async function saveRateLimitToDatabase(expiresAt) {
+  try {
+    await sql`
+      INSERT INTO rate_limit_state (account_type, rate_limit_expires_at, updated_at)
+      VALUES (${CURRENT_ACCOUNT_TYPE}, ${new Date(expiresAt).toISOString()}, NOW())
+      ON CONFLICT (account_type) 
+      DO UPDATE SET 
+        rate_limit_expires_at = ${new Date(expiresAt).toISOString()},
+        updated_at = NOW()
+    `;
+  } catch (error) {
+    // Table might not exist, log but don't fail
+    logger.warn(`[RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Could not save rate limit to database: ${error.message}`);
+  }
+}
+
+/**
+ * Clear rate limit state from database
+ * Clears the rate limit state for the currently selected account
+ */
+async function clearRateLimitFromDatabase() {
+  try {
+    await sql`DELETE FROM rate_limit_state WHERE account_type = ${CURRENT_ACCOUNT_TYPE}`;
+  } catch (error) {
+    // Ignore errors
+  }
+}
+
+/**
+ * Check if we're currently rate limited and wait if necessary
+ * All workers call this before making Spotify API requests
+ */
+async function waitForRateLimit(logPrefix = '') {
+  if (!globalRateLimit.isLimited) {
+    return; // Not rate limited, proceed
+  }
+
+  // Check if rate limit has expired
+  if (globalRateLimit.expiresAt && Date.now() >= globalRateLimit.expiresAt) {
+    // Rate limit expired, clear it
+    globalRateLimit.isLimited = false;
+    globalRateLimit.expiresAt = null;
+    globalRateLimit.retryAfter = null;
+    clearRateLimitFromDatabase(); // Remove from database
+    logger.info(`${logPrefix} [RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Rate limit expired. Resuming requests.`);
+    return;
+  }
+
+  // Calculate how long to wait
+  const waitMs = globalRateLimit.expiresAt 
+    ? Math.max(globalRateLimit.expiresAt - Date.now(), 0)
+    : (globalRateLimit.retryAfter || 5) * 1000;
+
+  if (waitMs > 0) {
+    logger.warn(`${logPrefix} [RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Global rate limit active. Waiting ${Math.ceil(waitMs/1000)}s before proceeding...`);
+    await sleep(waitMs);
+    
+    // Clear rate limit after waiting
+    globalRateLimit.isLimited = false;
+    globalRateLimit.expiresAt = null;
+    globalRateLimit.retryAfter = null;
+    clearRateLimitFromDatabase(); // Remove from database
+    logger.info(`${logPrefix} [RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Rate limit cleared. Resuming requests.`);
+  }
+}
+
+/**
+ * Set global rate limit when a 429 error is received
+ * All workers will respect this and pause their requests
+ */
+function setGlobalRateLimit(retryAfterSeconds, logPrefix = '') {
+  const retryAfter = Number(retryAfterSeconds) || 5;
+  const waitMs = retryAfter * 1000;
+  const expiresAt = Date.now() + waitMs;
+
+  // Log what Spotify told us
+    logger.warn(`${logPrefix} [RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Received Retry-After header: ${retryAfterSeconds} seconds (parsed as: ${retryAfter}s)`);
+
+  // Only update if not already limited, or if new expiration is LATER than current
+  // This prevents race conditions where multiple workers set rate limits simultaneously
+  if (!globalRateLimit.isLimited || !globalRateLimit.expiresAt || expiresAt > globalRateLimit.expiresAt) {
+    globalRateLimit.isLimited = true;
+    globalRateLimit.expiresAt = expiresAt;
+    globalRateLimit.retryAfter = retryAfter;
+
+    // Persist to database so it survives server restarts
+    saveRateLimitToDatabase(expiresAt);
+
+    logger.warn(`${logPrefix} [RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Global rate limit set. All workers will pause for ${retryAfter}s (until ${new Date(expiresAt).toISOString()})`);
+  } else {
+    // Rate limit already set with later expiration, don't overwrite
+    logger.debug(`${logPrefix} [RATE-LIMIT] [${CURRENT_ACCOUNT_NAME}] Rate limit already active until ${new Date(globalRateLimit.expiresAt).toISOString()}. Not updating.`);
+  }
+}
+// --- END GLOBAL RATE LIMIT COORDINATION ---
+
 // Initialize Supabase Admin Client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
@@ -141,6 +287,37 @@ const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 const MASTER_REFRESH_TOKEN = process.env.MASTER_REFRESH_TOKEN;
 const MASTER_SPOTIFY_ID = process.env.MASTER_SPOTIFY_ID;
+const MASTER_REFRESH_TOKEN_BACKUP = process.env.MASTER_REFRESH_TOKEN_BACKUP;
+const MASTER_SPOTIFY_ID_BACKUP = process.env.MASTER_SPOTIFY_ID_BACKUP;
+
+// --- Account Selection ---
+// Set USE_BACKUP_ACCOUNT=true or 1 to use backup account, otherwise uses primary
+const USE_BACKUP_ACCOUNT = process.env.USE_BACKUP_ACCOUNT === 'true';
+const CURRENT_ACCOUNT_TYPE = USE_BACKUP_ACCOUNT ? 2 : 1; // 1 = primary, 2 = backup
+const CURRENT_REFRESH_TOKEN = USE_BACKUP_ACCOUNT ? MASTER_REFRESH_TOKEN_BACKUP : MASTER_REFRESH_TOKEN;
+const CURRENT_SPOTIFY_ID = USE_BACKUP_ACCOUNT ? MASTER_SPOTIFY_ID_BACKUP : MASTER_SPOTIFY_ID;
+const CURRENT_ACCOUNT_NAME = USE_BACKUP_ACCOUNT ? 'BACKUP' : 'PRIMARY';
+
+if (USE_BACKUP_ACCOUNT) {
+  logger.info(`[ACCOUNT] Using BACKUP Spotify account (ID: ${CURRENT_SPOTIFY_ID})`);
+  if (!MASTER_REFRESH_TOKEN_BACKUP || !MASTER_SPOTIFY_ID_BACKUP) {
+    logger.warn('⚠️  USE_BACKUP_ACCOUNT is enabled but backup credentials are missing!');
+  }
+} else {
+  logger.info(`[ACCOUNT] Using PRIMARY Spotify account (ID: ${CURRENT_SPOTIFY_ID})`);
+}
+
+// --- Master Access Token Caching ---
+// Cache the master access token to avoid refreshing it for every job
+// Spotify access tokens typically expire after 1 hour
+// Separate cache for each account type
+let masterAccessTokenCache = {
+  token: null,
+  expiresAt: null,
+  accountType: null // Track which account this cache is for
+};
+let tokenRefreshInProgress = false; // Mutex to prevent concurrent refreshes
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiration
 
 // --- Helper Functions ---
 
@@ -194,27 +371,123 @@ async function getUserIdFromRequest(req) {
 
 /**
  * Uses the master refresh token to get a new, valid master access token.
+ * Implements caching and mutex to prevent concurrent refresh requests.
+ * Uses the currently selected account (primary or backup).
  */
 async function getMasterAccessToken() {
-  const authHeader = 'Basic ' + (Buffer.from(CLIENT_ID + ':' + CLIENT_SECRET).toString('base64'));
-  const params = new URLSearchParams();
-  params.append('grant_type', 'refresh_token');
-  params.append('refresh_token', MASTER_REFRESH_TOKEN);
-
+  const now = Date.now();
+  
+  // Check if we have a valid cached token for the current account
+  if (masterAccessTokenCache.token && 
+      masterAccessTokenCache.expiresAt && 
+      masterAccessTokenCache.expiresAt > now &&
+      masterAccessTokenCache.accountType === CURRENT_ACCOUNT_TYPE) {
+    return masterAccessTokenCache.token;
+  }
+  
+  // If cache is for a different account, clear it
+  if (masterAccessTokenCache.accountType !== null && masterAccessTokenCache.accountType !== CURRENT_ACCOUNT_TYPE) {
+    masterAccessTokenCache = { token: null, expiresAt: null, accountType: null };
+  }
+  
+  // If a refresh is already in progress, wait for it
+  while (tokenRefreshInProgress) {
+    await sleep(100); // Wait 100ms and check again
+  }
+  
+  // Double-check cache after waiting (another worker might have refreshed it)
+  if (masterAccessTokenCache.token && 
+      masterAccessTokenCache.expiresAt && 
+      masterAccessTokenCache.expiresAt > now &&
+      masterAccessTokenCache.accountType === CURRENT_ACCOUNT_TYPE) {
+    return masterAccessTokenCache.token;
+  }
+  
+  // Acquire mutex
+  tokenRefreshInProgress = true;
+  
   try {
-    const response = await axios.post('https://accounts.spotify.com/api/token', params, {
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        'Authorization': authHeader
-      }
-    });
+    const authHeader = 'Basic ' + (Buffer.from(CLIENT_ID + ':' + CLIENT_SECRET).toString('base64'));
+    const params = new URLSearchParams();
+    params.append('grant_type', 'refresh_token');
+    params.append('refresh_token', CURRENT_REFRESH_TOKEN);
 
-    // We don't need to handle new refresh tokens for the master account,
-    // as we can just re-authenticate manually if it ever expires.
-    return response.data.access_token;
-  } catch (error) {
-    logger.error('CRITICAL: Could not refresh master access token!', error.response ? error.response.data : error.message);
-    throw new Error('Failed to get master access token.');
+    // Retry logic for token refresh (3 retries with exponential backoff)
+    const MAX_TOKEN_REFRESH_RETRIES = 3;
+    let lastError;
+    
+    for (let retryCount = 0; retryCount <= MAX_TOKEN_REFRESH_RETRIES; retryCount++) {
+      try {
+        if (retryCount > 0) {
+          const backoffMs = Math.min(1000 * Math.pow(2, retryCount - 1), 10000); // 1s, 2s, 4s, max 10s
+          logger.warn(`[TOKEN-REFRESH] Retry ${retryCount}/${MAX_TOKEN_REFRESH_RETRIES} after ${backoffMs}ms...`);
+          await sleep(backoffMs);
+        }
+        
+        const response = await axios.post('https://accounts.spotify.com/api/token', params, {
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            'Authorization': authHeader
+          }
+        });
+
+        const accessToken = response.data.access_token;
+        const expiresIn = response.data.expires_in || 3600; // Default to 1 hour if not provided
+        
+        // Cache the token with expiration time (subtract buffer to refresh early)
+        masterAccessTokenCache = {
+          token: accessToken,
+          expiresAt: now + (expiresIn * 1000) - TOKEN_REFRESH_BUFFER_MS,
+          accountType: CURRENT_ACCOUNT_TYPE
+        };
+        
+        logger.info(`[TOKEN-REFRESH] [${CURRENT_ACCOUNT_NAME}] Successfully refreshed master access token. Expires in ${expiresIn}s (cached until ${new Date(masterAccessTokenCache.expiresAt).toISOString()})`);
+        
+        // We don't need to handle new refresh tokens for the master account,
+        // as we can just re-authenticate manually if it ever expires.
+        return accessToken;
+      } catch (error) {
+        lastError = error;
+        const status = error.response?.status;
+        const statusText = error.response?.statusText;
+        const errorData = error.response?.data;
+        const retryAfter = error.response?.headers?.['retry-after'];
+        
+        if (status === 429 && retryAfter) {
+          // Rate limited - wait for the specified time
+          const waitSeconds = parseInt(retryAfter, 10);
+          logger.warn(`[TOKEN-REFRESH] Rate limited. Waiting ${waitSeconds}s before retry...`);
+          await sleep(waitSeconds * 1000);
+          continue; // Retry after waiting
+        }
+        
+        // Log detailed error for debugging
+        logger.error(`[TOKEN-REFRESH] Attempt ${retryCount + 1}/${MAX_TOKEN_REFRESH_RETRIES + 1} failed:`, {
+          status,
+          statusText,
+          errorData,
+          retryAfter,
+          message: error.message
+        });
+        
+        // If this is the last retry, break and throw
+        if (retryCount === MAX_TOKEN_REFRESH_RETRIES) {
+          break;
+        }
+      }
+    }
+    
+    // All retries failed
+    logger.error('CRITICAL: Could not refresh master access token after all retries!', {
+      status: lastError?.response?.status,
+      statusText: lastError?.response?.statusText,
+      errorData: lastError?.response?.data,
+      message: lastError?.message
+    });
+    throw new Error(`Failed to get master access token after ${MAX_TOKEN_REFRESH_RETRIES + 1} attempts: ${lastError?.response?.status || lastError?.message}`);
+  } finally {
+    // Release mutex
+    tokenRefreshInProgress = false;
   }
 }
 
@@ -258,6 +531,14 @@ function formatHourShort(hour) {
 async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, maxStartTime, workerId) {
   // Add log prefix for easier tracing
   const logPrefix = `[Worker ${workerId}]`;
+  
+  // Rate limiting: Delay between Spotify API calls to prevent 429 errors
+  // With 16 concurrent workers, we need aggressive throttling
+  // Spotify allows ~30 req/sec total, so with 16 workers: 30/16 = ~1.9 req/sec per worker
+  // Increasing to 1000ms delay = 1 req/sec per worker = 16 req/sec total (safer buffer)
+  // Can be overridden with SPOTIFY_API_DELAY_MS env var (in milliseconds)
+  const SPOTIFY_API_DELAY_MS = parseInt(process.env.SPOTIFY_API_DELAY_MS || '1000', 10);
+  
   // await updateJobLog(jobId, `Scouting venues in ${city} for ${date}...`);
   // Get the raw artist list by calling our scraper
   const rawEventsList = await scrapeBandsintown(date, latitude, longitude, workerId);
@@ -358,13 +639,53 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 
   // await updateJobLog(jobId, "Creating empty playlist on Spotify...");
 
-  const createPlaylistResponse = await axios.post(
-    `https://api.spotify.com/v1/users/${MASTER_SPOTIFY_ID}/playlists`,
-    playlistData,
-    axiosConfig
-  );
-  const playlistId = createPlaylistResponse.data.id;
-  logger.info(`${logPrefix} Successfully created new playlist with ID: ${playlistId}`);
+  // Rate limiting: Check global rate limit BEFORE creating playlist
+  await waitForRateLimit(logPrefix);
+  
+  // Additional pre-emptive delay to prevent hitting rate limits
+  await sleep(SPOTIFY_API_DELAY_MS);
+
+  // Create playlist with retry logic for rate limits
+  let playlistId = null;
+  const MAX_PLAYLIST_CREATE_RETRIES = 3;
+  let playlistRetryCount = 0;
+  
+  while (playlistRetryCount < MAX_PLAYLIST_CREATE_RETRIES && !playlistId) {
+    try {
+      // Check rate limit before each retry attempt
+      await waitForRateLimit(logPrefix);
+      await sleep(SPOTIFY_API_DELAY_MS);
+      
+      const createPlaylistResponse = await axios.post(
+        `https://api.spotify.com/v1/users/${CURRENT_SPOTIFY_ID}/playlists`,
+        playlistData,
+        axiosConfig
+      );
+      playlistId = createPlaylistResponse.data.id;
+      logger.info(`${logPrefix} Successfully created new playlist with ID: ${playlistId}`);
+    } catch (playlistError) {
+      const playlistStatus = playlistError.response ? playlistError.response.status : null;
+      playlistRetryCount++;
+      
+      if (playlistStatus === 429 && playlistRetryCount < MAX_PLAYLIST_CREATE_RETRIES) {
+        // Set global rate limit and wait
+        const retryAfterSeconds = playlistError.response?.headers?.['retry-after'] || 
+                                 playlistError.response?.headers?.['Retry-After'] || 5;
+        logger.warn(`${logPrefix} [RATE-LIMIT] Playlist creation 429 - Headers: ${JSON.stringify(playlistError.response?.headers)}`);
+        setGlobalRateLimit(retryAfterSeconds, logPrefix);
+        await waitForRateLimit(logPrefix);
+        logger.warn(`${logPrefix} Playlist creation failed with 429. Retry ${playlistRetryCount}/${MAX_PLAYLIST_CREATE_RETRIES}...`);
+      } else {
+        // Not retryable or out of retries
+        logger.error(`${logPrefix} Failed to create playlist. Status: ${playlistStatus}. Giving up after ${playlistRetryCount} attempts.`);
+        throw playlistError; // Re-throw to be caught by outer try-catch
+      }
+    }
+  }
+  
+  if (!playlistId) {
+    throw new Error('Failed to create playlist after all retries');
+  }
 
   // --- Deduplication Logic for Objects ---
   // We need to deduplicate by Artist Name, but keep the event object.
@@ -444,6 +765,92 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
   // track total number of tracks added to see if we added any at all
   let tracksAddedCount = 0;
 
+  // --- BATCHING SYSTEM FOR OPTION A ---
+  // Collect track URIs in batches to reduce API calls
+  // Spotify allows up to 100 tracks per POST request
+  const BATCH_SIZE = 100;
+  const trackBatch = []; // Array of track URIs to add
+  const batchArtistNames = []; // Track which artists are in current batch (for error handling)
+  
+  // Helper function to flush the current batch to Spotify
+  const flushBatch = async () => {
+    if (trackBatch.length === 0) return;
+    
+    const MAX_BATCH_RETRIES = 3;
+    let retryCount = 0;
+    let success = false;
+    
+    while (retryCount < MAX_BATCH_RETRIES && !success) {
+      try {
+        // Rate limiting: Check global rate limit BEFORE each retry attempt
+        await waitForRateLimit(logPrefix);
+        
+        // Additional pre-emptive delay to prevent hitting rate limits
+        await sleep(SPOTIFY_API_DELAY_MS);
+        
+        await axios.post(
+          `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+          { uris: trackBatch },
+          axiosConfig
+        );
+        
+        logger.info(`${logPrefix} [BATCH] Successfully added ${trackBatch.length} tracks to playlist (${batchArtistNames.length} artists)`);
+        tracksAddedCount += trackBatch.length;
+        success = true;
+        
+        // Clear the batch
+        trackBatch.length = 0;
+        batchArtistNames.length = 0;
+      } catch (batchError) {
+        const batchStatus = batchError.response ? batchError.response.status : null;
+        retryCount++;
+        
+        // Check if it's a retryable error (429, 5xx)
+        const isRetryable = batchStatus === 429 || (batchStatus >= 500 && batchStatus < 600);
+        
+        if (isRetryable && retryCount < MAX_BATCH_RETRIES) {
+          if (batchStatus === 429) {
+            // Set global rate limit so all workers pause
+            const retryAfterSeconds = batchError.response?.headers?.['retry-after'] || 
+                                     batchError.response?.headers?.['Retry-After'] || 5;
+            logger.warn(`${logPrefix} [RATE-LIMIT] Batch POST 429 - Headers: ${JSON.stringify(batchError.response?.headers)}`);
+            setGlobalRateLimit(retryAfterSeconds, logPrefix);
+            
+            // Wait for global rate limit (this coordinates across all workers)
+            await waitForRateLimit(logPrefix);
+            
+            logger.warn(`${logPrefix} [BATCH] Retrying after global rate limit cleared. Retry ${retryCount}/${MAX_BATCH_RETRIES}...`);
+          } else {
+            // For 5xx errors, use standard exponential backoff
+            const waitMs = Math.max(3000 * Math.pow(2, retryCount - 1), 3000);
+            logger.warn(`${logPrefix} [BATCH] Failed to add ${trackBatch.length} tracks. Status: ${batchStatus}. Retry ${retryCount}/${MAX_BATCH_RETRIES} in ${waitMs/1000}s...`);
+            await sleep(waitMs);
+          }
+          // Continue loop to retry
+        } else {
+          // Not retryable or out of retries - log failure
+          logger.error(`${logPrefix} [BATCH] Failed to add ${trackBatch.length} tracks (${batchArtistNames.length} artists). Status: ${batchStatus}. Giving up after ${retryCount} attempts.`);
+          
+          // Log batch failure to frontend so user knows some tracks may be missing
+          const failedArtistsList = batchArtistNames.slice(0, 5).join(', '); // Show first 5 artists
+          const moreArtists = batchArtistNames.length > 5 ? ` and ${batchArtistNames.length - 5} more` : '';
+          await updateJobLog(
+            jobId,
+            `WARNING: Failed to add tracks for ${batchArtistNames.length} artists (${failedArtistsList}${moreArtists}). Some tracks may be missing from playlist.`,
+            null, // Don't update progress count
+            null
+          );
+          
+          // Clear the batch even on failure to prevent retrying the same batch
+          trackBatch.length = 0;
+          batchArtistNames.length = 0;
+          break; // Exit retry loop
+        }
+      }
+    }
+  };
+  // --- END BATCHING SYSTEM ---
+
   // --- Loop over uniqueEvents objects ---
   for (let i = 0; i < uniqueEvents.length; i++) {
     const eventObj = uniqueEvents[i];
@@ -461,6 +868,15 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     
     // await updateJobLog(jobId, `Checking Spotify for: "${artistName}"...`, i, uniqueEvents.length);
     logger.info(`${logPrefix} [${i + 1}/${uniqueEvents.length}] Processing artist: "${artistName}"`);
+    
+    // Rate limiting: Add delay before making API call (except on retries)
+    // Rate limiting: Check global rate limit BEFORE artist search (most frequent call)
+    await waitForRateLimit(logPrefix);
+    
+    if (i > 0 || retryCounts[artistName] === undefined) {
+      await sleep(SPOTIFY_API_DELAY_MS);
+    }
+    
     try {
       const searchResponse = await axios.get(
         `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
@@ -541,8 +957,15 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           logger.info(`${logPrefix} Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
           continue;
         }
-        // If not, this is a new artist. Add them to our Set.
-        processedArtistIds.add(spotifyArtistId);
+        // NOTE: We do NOT add to processedArtistIds here. We only add it after successfully
+        // getting tracks and adding them to the batch. This allows retries to work correctly
+        // if we get a 429 error when fetching top tracks.
+        
+        // Rate limiting: Check global rate limit BEFORE top-tracks API call
+        await waitForRateLimit(logPrefix);
+        
+        // Additional pre-emptive delay to prevent hitting rate limits
+        await sleep(SPOTIFY_API_DELAY_MS);
         
         const topTracksResponse = await axios.get(
           `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks`, {
@@ -553,20 +976,30 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
         const trackUris = tracksToAdd.map(track => track.uri);
 
         if (trackUris.length > 0) {
-          await axios.post(
-            `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
-            { uris: trackUris },
-            axiosConfig
-          );
           // Use bestMatch.name for the log since artistName can be slightly different
           const logName = artistName;
+          
+          // OPTION A: Log artist immediately (before batching POST)
+          // This makes artists appear in feed faster
           await updateJobLog(jobId, `ARTIST:${logName}`, i, uniqueEvents.length);
-          logger.info(`${logPrefix}   -> SUCCESS: Added ${trackUris.length} tracks for "${logName}".`);
+          logger.info(`${logPrefix}   -> Found ${trackUris.length} tracks for "${logName}". Adding to batch...`);
 
-          tracksAddedCount += trackUris.length;
+          // Add tracks to batch
+          trackBatch.push(...trackUris);
+          batchArtistNames.push(logName);
+          
+          // NOW we can mark this artist as processed, since we successfully got tracks
+          processedArtistIds.add(spotifyArtistId);
+
+          // If batch is full, flush it immediately
+          if (trackBatch.length >= BATCH_SIZE) {
+            await flushBatch();
+          }
         } else {
           logger.info(`${logPrefix}   -> Found artist, but they have no top tracks. Skipping track add.`);
           await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, i, uniqueEvents.length);
+          // Mark as processed even if no tracks, to avoid retrying artists with no tracks
+          processedArtistIds.add(spotifyArtistId);
         }
       }
     } catch (error) {
@@ -593,14 +1026,29 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
           let waitReason = `${status} server error`;
 
           if (status === 429) {
-            // It's a rate-limit error, check for the 'retry-after' header
-            const retryAfterSeconds = error.response.headers['retry-after'] || 5; 
-            waitMs = Number(retryAfterSeconds) * 1000;
-            waitReason = `429 rate limit`;
+            // It's a rate-limit error - set global rate limit so all workers pause
+            const retryAfterSeconds = error.response?.headers?.['retry-after'] || 
+                                     error.response?.headers?.['Retry-After'] || 5;
+            logger.warn(`${logPrefix} [RATE-LIMIT] Artist search 429 - Headers: ${JSON.stringify(error.response?.headers)}`);
+            setGlobalRateLimit(retryAfterSeconds, logPrefix);
+            
+            // Wait for global rate limit (this coordinates across all workers)
+            await waitForRateLimit(logPrefix);
+            
+            waitReason = `429 rate limit (global coordination)`;
+            waitMs = 0; // Already waited in waitForRateLimit
+          } else {
+            // For 5xx errors, use standard exponential backoff
+            const exponentialMultiplier = Math.pow(2, currentRetries);
+            waitMs = Math.max(3000 * exponentialMultiplier, 3000);
           }
 
-          logger.warn(`${logPrefix} Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
-          await sleep(waitMs);
+          if (waitMs > 0) {
+            logger.warn(`${logPrefix} Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
+            await sleep(waitMs);
+          } else {
+            logger.warn(`${logPrefix} Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Retrying artist "${artistName}" after global rate limit cleared...`);
+          }
           
           i--; // Rewind the loop to retry
           logger.info(`${logPrefix} Retrying artist "${artistName}"...`);
@@ -616,27 +1064,45 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
     }
   }
 
+  // Flush any remaining tracks in the batch before completing
+  if (trackBatch.length > 0) {
+    logger.info(`${logPrefix} [BATCH] Flushing final batch of ${trackBatch.length} tracks (${batchArtistNames.length} artists)...`);
+    await flushBatch();
+  }
+
   await updateJobLog(jobId, `Curation complete for ${city} on ${prettyDate}`, uniqueEvents.length, uniqueEvents.length);
   logger.info(`${logPrefix} Curation complete. Total tracks added to playlist: ${tracksAddedCount}`);
-  // After the loop, check if we actually added any songs.
+  
+  // Check if we actually added any songs
+  // IMPORTANT: Distinguish between "no artists found" vs "artists found but batch failed"
   if (tracksAddedCount === 0) {
-    // We created an empty playlist. This is a "failure".
-    logger.warn(`${logPrefix} No tracks added for playlist ${playlistId}. Deleting empty playlist...`);
-    try {
-      // We must "unfollow" (delete) the playlist from the master account.
-      // This is a NEW Spotify API endpoint we are using.
-      await axios.delete(
-        `https://api.spotify.com/v1/playlists/${playlistId}/followers`,
-        { headers: { 'Authorization': `Bearer ${accessToken}` } }
-      );
-      logger.warn(`${logPrefix} Successfully deleted empty playlist ${playlistId}.`);
-    } catch (deleteError) {
-      logger.error(`${logPrefix} CRITICAL! Failed to delete empty playlist ${playlistId}.`, deleteError.message);
-      // Don't stop, just let it return null.
+    // Check if we actually found artists (but failed to add tracks)
+    if (uniqueEvents.length > 0) {
+      // We found artists but failed to add tracks (likely batch failures)
+      // Still return the playlist ID so user can see what was attempted
+      // The warning messages in logs will inform them of the issue
+      logger.warn(`${logPrefix} Found ${uniqueEvents.length} artists but no tracks were successfully added. Playlist may be empty or incomplete.`);
+      // Return playlistId anyway - let the user see the (possibly empty) playlist
+      // The warnings in the feed will explain what happened
+      return { playlistId, events: uniqueEvents };
+    } else {
+      // No artists found at all - this is a true "no artists" failure
+      logger.warn(`${logPrefix} No artists found for playlist ${playlistId}. Deleting empty playlist...`);
+      try {
+        // We must "unfollow" (delete) the playlist from the master account.
+        await axios.delete(
+          `https://api.spotify.com/v1/playlists/${playlistId}/followers`,
+          { headers: { 'Authorization': `Bearer ${accessToken}` } }
+        );
+        logger.warn(`${logPrefix} Successfully deleted empty playlist ${playlistId}.`);
+      } catch (deleteError) {
+        logger.error(`${logPrefix} CRITICAL! Failed to delete empty playlist ${playlistId}.`, deleteError.message);
+        // Don't stop, just let it return null.
+      }
+      
+      // Return null, which our worker will see as a failure.
+      return { playlistId: null, events: [] };
     }
-    
-    // Return null, which our worker will see as a failure.
-    return { playlistId: null, events: [] };
   }
   return { playlistId, events: uniqueEvents };
 
@@ -1017,6 +1483,11 @@ app.get('/api/playlists', async (req, res) => {
         `;
         // We do NOT return here. We let the code fall through to "Create a New Job" below.
         
+      } else if (job.status === 'failed') {
+        // If the job failed, allow retry by creating a new job
+        logger.info(`Cache HIT (Job ${job.id}): Previous job failed. Creating new job to allow retry.`);
+        // Fall through to create a new job below
+        
       } else {
         // It's a valid running job or a completed job. Return it.
         logger.info(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}`);
@@ -1081,13 +1552,15 @@ app.get('/api/playlists/status', async (req, res) => {
   try {
     const jobResult = await sql`
       SELECT 
+        id,
         status, 
         playlist_id, 
         error_message, 
         log_history,
         total_artists,
         processed_artists,
-        events_data
+        events_data,
+        created_at
       FROM playlist_jobs 
       WHERE id = ${jobId};
     `;
@@ -1097,6 +1570,33 @@ app.get('/api/playlists/status', async (req, res) => {
     }
 
     const job = jobResult[0];
+
+    // Calculate queue position: count how many pending jobs have a lower ID (were created before this one)
+    // Using ID instead of created_at because IDs are sequential and unique, avoiding timestamp precision issues
+    let queuePosition = 0;
+    if (job.status === 'pending') {
+      // First, let's get all pending jobs to debug
+      const allPendingJobs = await sql`
+        SELECT id, status, created_at
+        FROM playlist_jobs
+        WHERE status = 'pending'
+        ORDER BY id ASC
+      `;
+      
+      const queueCount = await sql`
+        SELECT COUNT(*) as count
+        FROM playlist_jobs
+        WHERE status = 'pending'
+        AND id < ${job.id}
+      `;
+      queuePosition = Number(queueCount[0]?.count) || 0;
+      
+      // Debug logging to verify queue position calculation
+      logger.warn(`[QUEUE-POS] Job ${job.id}: Total pending jobs: ${allPendingJobs.length}. Jobs with lower ID: ${queuePosition}. Display position: ${queuePosition + 1}`);
+      if (allPendingJobs.length > 0) {
+        logger.warn(`[QUEUE-POS] All pending job IDs: ${allPendingJobs.map(j => j.id).join(', ')}`);
+      }
+    }
 
     // Send the whole job status back to the frontend.
     // The frontend will decide what to do with this.
@@ -1109,7 +1609,8 @@ app.get('/api/playlists/status', async (req, res) => {
         total: job.total_artists || 0,
         current: job.processed_artists || 0
       },
-      events: job.events_data || []
+      events: job.events_data || [],
+      queuePosition: queuePosition
     });
 
   } catch (error) {
@@ -1359,7 +1860,7 @@ app.post('/api/my-playlists/:id/refresh', async (req, res) => {
  * Starts the queue processing when the server boots.
  */
 function startWorker() {
-  const CONCURRENT_WORKERS = 4;
+  const CONCURRENT_WORKERS = 16;
   logger.info(`Starting ${CONCURRENT_WORKERS} concurrent worker loops...`);
 
   // If the server just restarted, any job marked 'building' is actually dead.
@@ -1409,9 +1910,16 @@ function startWorker() {
   }
 }
 
+// Load rate limit state from database on startup (BEFORE starting workers)
+// This prevents making requests immediately after restart if we were rate limited
+loadRateLimitFromDatabase().then(() => {
+  logger.info(`Rate limit state loaded from database (if any).`);
+}).catch(err => {
+  logger.warn(`Could not load rate limit state: ${err.message}`);
+});
+
 startWorker();
 
-// Start the Server
 app.listen(port, '0.0.0.0', () => {
   logger.info(`Server listening on port ${port}. Access at http://localhost:${port}`);
 });

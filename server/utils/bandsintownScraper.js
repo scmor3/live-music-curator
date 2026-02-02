@@ -14,7 +14,12 @@ const ENABLE_DEBUG = process.env.ENABLE_DEBUG_SCRAPER === 'true'; // Set to fals
 // We allow multiple lightweight workers, but STRICTLY limit heavyweight browsers.
 // On a 512MB RAM server, 1 browser is the safe limit.
 let activeBrowserCount = 0;
-const MAX_BROWSERS = 1;
+const MAX_BROWSERS = 6;
+
+// Limit concurrent Bandsintown scraping attempts (both lightweight and Playwright)
+// This prevents overwhelming Bandsintown/Cloudflare with too many simultaneous requests
+let activeScrapeCount = 0;
+const MAX_CONCURRENT_SCRAPES = 4; // Limit to 4 concurrent scrapes to avoid Cloudflare blocks
 
 // Helper function to pause execution
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -52,39 +57,51 @@ async function scrapeBandsintown(dateStr, latitude, longitude, workerId = 1) {
   const sessionId = `session_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
   const logPrefix = `[Worker ${workerId}]`;
 
-  if (ENABLE_DEBUG) {
-    console.log(`${logPrefix} [SCRAPER] Starting job for ${dateStr} at ${latitude},${longitude}`);
-    console.log(`${logPrefix} [PROXY] Session ID: ${sessionId}`);
+  // --- GLOBAL SCRAPE SEMAPHORE (applies to both lightweight and Playwright) ---
+  // Wait for a scrape slot to prevent overwhelming Bandsintown
+  if (activeScrapeCount >= MAX_CONCURRENT_SCRAPES) {
+    if (ENABLE_DEBUG) console.log(`${logPrefix} [SCRAPE-QUEUE] Waiting for scrape slot... (Active: ${activeScrapeCount}/${MAX_CONCURRENT_SCRAPES})`);
   }
-
-  // [DEBUG] FORCE PLAYWRIGHT: Set this to TRUE to skip 'got-scraping'
-  const FORCE_PLAYWRIGHT = process.env.FORCE_PLAYWRIGHT === 'true';
-
-  // --- ATTEMPT 1: LIGHTWEIGHT (Got-Scraping) ---
-  if (!FORCE_PLAYWRIGHT) {
-    try {
-      if (ENABLE_DEBUG) console.log(`${logPrefix} [METHOD] Attempting lightweight scrape (got-scraping)...`);
-      const results = await scrapeWithGot(dateStr, latitude, longitude, sessionId, workerId);
-
-      // [PARANOID CHECK]
-      // If we got 0 results, we don't trust it. It might be a soft block or a Cloudflare challenge 
-      // that we didn't catch. We force the fallback to be sure.
-      if (results.length === 0) {
-        console.warn(`${logPrefix} [WARNING] Lightweight scrape found 0 artists. Assuming block/error. Falling back to Browser.`);
-        throw new Error(`${logPrefix} Zero results from Got-Scraping`);
-      }
-
-      if (ENABLE_DEBUG) console.log(`${logPrefix} [SUCCESS] Lightweight scrape finished with ${results.length} artists.`);
-      return results;
-
-    } catch (error) {
-      console.warn(`${logPrefix} [WARNING] Lightweight scrape failed. Falling back to Browser. Reason: ${error.message}`);
-      if (error.code) console.error(`${logPrefix} Error Code:`, error.code);
-      console.log(`${logPrefix} [FALLBACK] Launching full browser (Playwright)...`);
+  while (activeScrapeCount >= MAX_CONCURRENT_SCRAPES) {
+    await sleep(1000); // Check every second
+  }
+  activeScrapeCount++;
+  
+  try {
+    if (ENABLE_DEBUG) {
+      console.log(`${logPrefix} [SCRAPER] Starting job for ${dateStr} at ${latitude},${longitude}`);
+      console.log(`${logPrefix} [PROXY] Session ID: ${sessionId}`);
+      console.log(`${logPrefix} [SCRAPE-QUEUE] Acquired scrape slot. (Active: ${activeScrapeCount}/${MAX_CONCURRENT_SCRAPES})`);
     }
-  } else {
+
+    // [DEBUG] FORCE PLAYWRIGHT: Set this to TRUE to skip 'got-scraping'
+    const FORCE_PLAYWRIGHT = process.env.FORCE_PLAYWRIGHT === 'true';
+
+    // --- ATTEMPT 1: LIGHTWEIGHT (Got-Scraping) ---
+    if (!FORCE_PLAYWRIGHT) {
+      try {
+        if (ENABLE_DEBUG) console.log(`${logPrefix} [METHOD] Attempting lightweight scrape (got-scraping)...`);
+        const results = await scrapeWithGot(dateStr, latitude, longitude, sessionId, workerId);
+
+        // [PARANOID CHECK]
+        // If we got 0 results, we don't trust it. It might be a soft block or a Cloudflare challenge 
+        // that we didn't catch. We force the fallback to be sure.
+        if (results.length === 0) {
+          console.warn(`${logPrefix} [WARNING] Lightweight scrape found 0 artists. Assuming block/error. Falling back to Browser.`);
+          throw new Error(`${logPrefix} Zero results from Got-Scraping`);
+        }
+
+        if (ENABLE_DEBUG) console.log(`${logPrefix} [SUCCESS] Lightweight scrape finished with ${results.length} artists.`);
+        return results;
+
+      } catch (error) {
+        console.warn(`${logPrefix} [WARNING] Lightweight scrape failed. Falling back to Browser. Reason: ${error.message}`);
+        if (error.code) console.error(`${logPrefix} Error Code:`, error.code);
+        console.log(`${logPrefix} [FALLBACK] Launching full browser (Playwright)...`);
+      }
+    } else {
       console.log(`${logPrefix} [DEBUG] Forcing Playwright Fallback...`);
-  }
+    }
     // --- ATTEMPT 2: HEAVYWEIGHT (Playwright with semaphore) ---
     // 1. Check the Lock
     if (activeBrowserCount >= MAX_BROWSERS) {
@@ -109,7 +126,12 @@ async function scrapeBandsintown(dateStr, latitude, longitude, workerId = 1) {
       activeBrowserCount--;
       console.log(`${logPrefix} [SEMAPHORE] Released browser slot. (Active: ${activeBrowserCount}/${MAX_BROWSERS})`);
     }
+  } finally {
+    // Always release the global scrape semaphore
+    activeScrapeCount--;
+    if (ENABLE_DEBUG) console.log(`${logPrefix} [SCRAPE-QUEUE] Released scrape slot. (Active: ${activeScrapeCount}/${MAX_CONCURRENT_SCRAPES})`);
   }
+}
 
 /**
  * METHOD A: Lightweight HTTP Request (Low RAM, High Speed)
