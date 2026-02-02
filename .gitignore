@@ -149,4 +149,15 @@ server/utils/testScraperPlaywright.js
 # prompts
 docs/prompts.md
 
+# cursor plans
+docs/BATCHING_ANALYSIS.md
+docs/BATCHING_IMPLEMENTATION.md
+docs/FRONTEND_CHANGES_NEEDED.md
+docs/GLOBAL_RATE_LIMIT_IMPLEMENTATION.md
+docs/LOG_ANALYSIS.md
+docs/RATE_LIMIT_COORDINATION.md
+docs/TESTING_BATCHING.md
+docs/BUGFIXES_BATCHING.md
+server/utils/SPOTIFY_AUTH_GUIDE.md
+server/utils/getSpotifyTokens.js
 
