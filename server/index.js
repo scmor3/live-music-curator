@@ -9,6 +9,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const { createClient } = require('@supabase/supabase-js');
 
 const { scrapeBandsintown } = require('./utils/bandsintownScraper');
+const { sendPlaylistEmail } = require('./utils/emailService');
 // --- Logger Configuration ---
 // Get the log level from environment variables. Default to 'info' for production.
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
@@ -212,12 +213,15 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 // Whitelist of all allowed frontend URLs
 const allowedOrigins = [
-  'https://live-music-curator.vercel.app', // Production URL
-  'https://live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app', // Preview URL
+  // --- Production URLs ---
+  'https://livemusiccurator.com',
+  'https://www.livemusiccurator.com',
+  // --- Legacy URLs (keep for backwards compatibility during transition) ---
+  'https://live-music-curator.vercel.app',
+  'https://live-music-curator-git-deployment-prep-scmor3s-projects.vercel.app',
   // --- Local Development ---
   'http://172.17.236.175:3001', // Your specific WSL frontend
   'http://localhost:3001'      // Standard localhost frontend
-  // Other URLs can be added here as needed
 ];
 
 const corsOptions = {
@@ -1211,6 +1215,63 @@ async function processJobQueue(workerId) {
         updated_at = NOW()
       WHERE id = ${job.id};
     `;
+
+    // Check for pending email requests and send them
+    try {
+      const pendingEmails = await sql`
+        SELECT * FROM email_requests 
+        WHERE job_id = ${job.id} AND status = 'pending'
+      `;
+
+      if (pendingEmails.length > 0) {
+        logger.info(`${logPrefix} Found ${pendingEmails.length} pending email request(s) for job ${job.id}. Sending emails...`);
+        
+        for (const emailRequest of pendingEmails) {
+          try {
+            const emailResult = await sendPlaylistEmail({
+              to: emailRequest.email,
+              playlistId: playlistId,
+              cityName: job.search_city,
+              playlistDate: job.search_date,
+              artistCount: events.length,
+              excludedGenres: job.excluded_genres,
+              minStartTime: job.min_start_time,
+              maxStartTime: job.max_start_time
+            });
+
+            if (emailResult.success) {
+              // Update email request as sent
+              await sql`
+                UPDATE email_requests 
+                SET status = 'sent', sent_at = NOW(), updated_at = NOW()
+                WHERE id = ${emailRequest.id}
+              `;
+              logger.info(`${logPrefix} Successfully sent deferred email to ${emailRequest.email} for job ${job.id}`);
+            } else {
+              // Update email request as failed
+              await sql`
+                UPDATE email_requests 
+                SET status = 'failed', error_message = ${emailResult.error}, updated_at = NOW()
+                WHERE id = ${emailRequest.id}
+              `;
+              logger.error(`${logPrefix} Failed to send deferred email to ${emailRequest.email}: ${emailResult.error}`);
+            }
+          } catch (emailError) {
+            // Update email request as failed
+            await sql`
+              UPDATE email_requests 
+              SET status = 'failed', error_message = ${emailError.message}, updated_at = NOW()
+              WHERE id = ${emailRequest.id}
+            `;
+            logger.error(`${logPrefix} Error sending deferred email to ${emailRequest.email}: ${emailError.message}`);
+          }
+        }
+      }
+    } catch (emailCheckError) {
+      // Don't fail the job if email sending fails - just log it
+      logger.warn(`${logPrefix} Error checking for pending emails: ${emailCheckError.message}`);
+    }
+
     } else {
       logger.warn(`${logPrefix} Job ${job.id} found no artists. Marking as 'failed'.`);
       await sql`
@@ -1852,6 +1913,169 @@ app.post('/api/my-playlists/:id/refresh', async (req, res) => {
   } catch (error) {
     logger.error(`Error refreshing playlist ${id}:`, error);
     return res.status(500).json({ error: 'Failed to refresh playlist.' });
+  }
+});
+
+/**
+ * Send playlist link via email.
+ * Supports both immediate sending (if playlist is complete) and deferred sending (if playlist is still building).
+ */
+app.post('/api/email-playlist', async (req, res) => {
+  const { playlistId, email, jobId } = req.body;
+  const userId = await getUserIdFromRequest(req);
+
+  // Validate required fields
+  if (!playlistId) {
+    return res.status(400).json({ error: 'Missing required field: playlistId' });
+  }
+
+  // Determine recipient email
+  let recipientEmail = email;
+  
+  // If user is logged in, try to get their email from Supabase
+  if (userId && !recipientEmail) {
+    try {
+      const { data: { user }, error } = await supabaseAdmin.auth.getUser(
+        req.headers.authorization?.split(' ')[1]
+      );
+      if (!error && user?.email) {
+        recipientEmail = user.email;
+      }
+    } catch (err) {
+      logger.debug(`Could not get user email from token: ${err.message}`);
+    }
+  }
+
+  // If still no email, require it in the request
+  if (!recipientEmail) {
+    return res.status(400).json({ error: 'Email address is required. Please provide an email or log in.' });
+  }
+
+  // Basic email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(recipientEmail)) {
+    return res.status(400).json({ error: 'Invalid email address format.' });
+  }
+
+  try {
+    // Fetch job details if jobId is provided, otherwise try to find job by playlistId
+    let job = null;
+    if (jobId) {
+      const jobs = await sql`SELECT * FROM playlist_jobs WHERE id = ${jobId}`;
+      if (jobs.length > 0) job = jobs[0];
+    } else {
+      // Try to find job by playlist_id
+      const jobs = await sql`SELECT * FROM playlist_jobs WHERE playlist_id = ${playlistId} ORDER BY created_at DESC LIMIT 1`;
+      if (jobs.length > 0) job = jobs[0];
+    }
+
+    // Get playlist metadata from job or saved_playlists
+    let cityName = 'Unknown City';
+    let playlistDate = new Date().toISOString().split('T')[0];
+    let artistCount = 0;
+    let excludedGenres = null;
+    let minStartTime = null;
+    let maxStartTime = null;
+
+    if (job) {
+      cityName = job.search_city || cityName;
+      playlistDate = job.search_date || playlistDate;
+      artistCount = job.events_data?.length || 0;
+      excludedGenres = job.excluded_genres;
+      minStartTime = job.min_start_time;
+      maxStartTime = job.max_start_time;
+    } else {
+      // Try to get from saved_playlists if user is logged in
+      if (userId) {
+        const saved = await sql`
+          SELECT * FROM saved_playlists 
+          WHERE spotify_playlist_id = ${playlistId} AND user_id = ${userId}
+          ORDER BY created_at DESC LIMIT 1
+        `;
+        if (saved.length > 0) {
+          cityName = saved[0].city_name || cityName;
+          playlistDate = saved[0].playlist_date || playlistDate;
+          artistCount = saved[0].events_snapshot?.length || 0;
+          excludedGenres = saved[0].excluded_genres;
+          minStartTime = saved[0].min_start_time;
+          maxStartTime = saved[0].max_start_time;
+        }
+      }
+    }
+
+    // Check if playlist is ready (job is complete) or still building
+    const isPlaylistReady = job ? (job.status === 'complete' && job.playlist_id === playlistId) : true;
+
+    if (isPlaylistReady) {
+      // Playlist is ready - send email immediately
+      const emailResult = await sendPlaylistEmail({
+        to: recipientEmail,
+        playlistId,
+        cityName,
+        playlistDate,
+        artistCount,
+        excludedGenres,
+        minStartTime,
+        maxStartTime
+      });
+
+      if (!emailResult.success) {
+        // Save failed request to database
+        await sql`
+          INSERT INTO email_requests (
+            user_id, email, playlist_id, job_id, city_name, playlist_date,
+            status, error_message
+          ) VALUES (
+            ${userId}, ${recipientEmail}, ${playlistId}, ${jobId || null},
+            ${cityName}, ${playlistDate}, 'failed', ${emailResult.error}
+          )
+        `;
+        
+        logger.error(`Failed to send email to ${recipientEmail}: ${emailResult.error}`);
+        return res.status(500).json({ 
+          error: 'Failed to send email. Please try again or contact us at livemusiccurator@gmail.com' 
+        });
+      }
+
+      // Save successful request to database
+      await sql`
+        INSERT INTO email_requests (
+          user_id, email, playlist_id, job_id, city_name, playlist_date,
+          status, sent_at
+        ) VALUES (
+          ${userId}, ${recipientEmail}, ${playlistId}, ${jobId || null},
+          ${cityName}, ${playlistDate}, 'sent', NOW()
+        )
+      `;
+
+      logger.info(`Successfully sent email to ${recipientEmail} for playlist ${playlistId}`);
+      return res.json({ success: true, message: 'Email sent successfully' });
+
+    } else {
+      // Playlist is still building - save request as pending
+      await sql`
+        INSERT INTO email_requests (
+          user_id, email, playlist_id, job_id, city_name, playlist_date,
+          status
+        ) VALUES (
+          ${userId}, ${recipientEmail}, ${playlistId}, ${jobId || null},
+          ${cityName}, ${playlistDate}, 'pending'
+        )
+        ON CONFLICT DO NOTHING
+      `;
+
+      logger.info(`Saved pending email request for ${recipientEmail} - will send when job ${jobId} completes`);
+      return res.json({ 
+        success: true, 
+        message: 'Email request saved. You will receive the playlist link via email when it is ready.' 
+      });
+    }
+
+  } catch (error) {
+    logger.error('Error in /api/email-playlist:', error);
+    return res.status(500).json({ 
+      error: 'An error occurred. Please try again or contact us at livemusiccurator@gmail.com' 
+    });
   }
 });
 

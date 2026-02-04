@@ -44,7 +44,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
         if (view === 'signup') {
             // --- SIGN UP ---
 
-            // 1. Get the current URL (e.g., 'http://localhost:3000' or 'https://myapp.vercel.app')
+            // 1. Get the current URL (e.g., 'http://localhost:3001' or 'https://livemusiccurator.com')
             const currentUrl = window.location.origin;
             
             // STEP A: Try to UPGRADE the current anonymous user
