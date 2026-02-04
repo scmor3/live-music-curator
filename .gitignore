@@ -160,4 +160,5 @@ docs/TESTING_BATCHING.md
 docs/BUGFIXES_BATCHING.md
 server/utils/SPOTIFY_AUTH_GUIDE.md
 server/utils/getSpotifyTokens.js
-
+docs/EMAIL_FEATURE_PLAN.md
+docs/DOMAIN_MIGRATION.md

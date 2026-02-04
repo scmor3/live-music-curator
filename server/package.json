@@ -32,7 +32,8 @@
     "playwright": "^1.56.1",
     "playwright-extra": "^4.3.6",
     "postgres": "^3.4.7",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "resend": "^4.0.0"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
