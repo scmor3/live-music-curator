@@ -15,6 +15,11 @@ const FROM_EMAIL = process.env.EMAIL_FROM || 'noreply@livemusiccurator.com';
 const DONATION_LINK = process.env.DONATION_LINK || process.env.NEXT_PUBLIC_DONATE_URL || 'https://buy.stripe.com/your-payment-link-here';
 const SUPPORT_EMAIL = 'livemusiccurator@gmail.com';
 
+// Rate limiting: Resend allows 2 requests per second
+// Track last send time to throttle requests
+let lastEmailSendTime = 0;
+const MIN_EMAIL_INTERVAL_MS = 500; // 500ms = 2 requests per second max
+
 /**
  * Format hour for display (e.g., 19 -> "7pm", 0 -> "12am")
  */
@@ -26,10 +31,14 @@ function formatHourShort(hour) {
 
 /**
  * Format date for display (e.g., "2025-12-31" -> "Dec 31, 2025")
+ * Parses the date string as a local date to avoid timezone issues
  */
 function formatDatePretty(isoDate) {
   if (!isoDate) return '';
-  const date = new Date(isoDate);
+  // Parse date string (YYYY-MM-DD) as local date to avoid timezone conversion
+  // This prevents off-by-one errors when the date is interpreted as UTC
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const date = new Date(year, month - 1, day); // month is 0-indexed in Date constructor
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
 }
 
@@ -77,6 +86,7 @@ function buildEmailBody(playlistData) {
 
   body += `\nEnjoy discovering new music!\n\n`;
   body += `---\n`;
+  body += `Visit us: https://livemusiccurator.com\n\n`;
   body += `Contact us at ${SUPPORT_EMAIL}\n\n`;
   body += `Support Live Music Curator\n`;
   body += `Donate: ${DONATION_LINK}\n\n`;
@@ -123,6 +133,17 @@ async function sendPlaylistEmail({
   }
 
   try {
+    // Rate limiting: Ensure we don't exceed 2 requests per second
+    // Resend allows 2 requests per second, so we need at least 500ms between sends
+    const now = Date.now();
+    const timeSinceLastSend = now - lastEmailSendTime;
+    if (timeSinceLastSend < MIN_EMAIL_INTERVAL_MS) {
+      const waitTime = MIN_EMAIL_INTERVAL_MS - timeSinceLastSend;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    // Update timestamp right before making the API call
+    lastEmailSendTime = Date.now();
+
     const subject = `Your Curated Live Music Playlist: ${cityName} - ${formatDatePretty(playlistDate)}`;
     const body = buildEmailBody({
       cityName,
@@ -142,6 +163,32 @@ async function sendPlaylistEmail({
     });
 
     if (error) {
+      // Handle rate limit errors - retry after a delay
+      if (error.message && error.message.includes('Too many requests')) {
+        // Wait 1 second and retry once
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        lastEmailSendTime = Date.now();
+        
+        const retryResult = await resend.emails.send({
+          from: FROM_EMAIL,
+          to: [to],
+          subject: subject,
+          text: body
+        });
+        
+        if (retryResult.error) {
+          return {
+            success: false,
+            error: retryResult.error.message || 'Failed to send email after retry'
+          };
+        }
+        // Retry succeeded, continue with retryResult
+        return {
+          success: true,
+          messageId: retryResult.data?.id
+        };
+      }
+      
       return {
         success: false,
         error: error.message || 'Failed to send email'
