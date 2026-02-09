@@ -26,10 +26,14 @@ function formatHourShort(hour) {
 
 /**
  * Format date for display (e.g., "2025-12-31" -> "Dec 31, 2025")
+ * Parses the date string as a local date to avoid timezone issues
  */
 function formatDatePretty(isoDate) {
   if (!isoDate) return '';
-  const date = new Date(isoDate);
+  // Parse date string (YYYY-MM-DD) as local date to avoid timezone conversion
+  // This prevents off-by-one errors when the date is interpreted as UTC
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const date = new Date(year, month - 1, day); // month is 0-indexed in Date constructor
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
 }
 
@@ -77,6 +81,7 @@ function buildEmailBody(playlistData) {
 
   body += `\nEnjoy discovering new music!\n\n`;
   body += `---\n`;
+  body += `Visit us: https://livemusiccurator.com\n\n`;
   body += `Contact us at ${SUPPORT_EMAIL}\n\n`;
   body += `Support Live Music Curator\n`;
   body += `Donate: ${DONATION_LINK}\n\n`;

@@ -8,8 +8,10 @@ import {
   InformationCircleIcon,
   ChevronRightIcon,
   BookmarkIcon,
-  XMarkIcon
+  XMarkIcon,
+  EnvelopeIcon
 } from '@heroicons/react/24/outline';
+import EmailModal from './EmailModal';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -69,6 +71,28 @@ export default function LiveActivityFeed({
 
   // State for save button
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  // State for email modal
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | undefined>(undefined);
+
+  // Fetch user email for pre-filling
+  useEffect(() => {
+    const fetchUserEmail = async () => {
+      try {
+        const { data: { session } } = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+        ]);
+        if (session?.user?.email) {
+          setUserEmail(session.user.email);
+        }
+      } catch (err) {
+        // Continue without email if Supabase is unreachable
+      }
+    };
+    fetchUserEmail();
+  }, []);
 
   // Save Handler
   const handleSaveToLibrary = async () => {
@@ -326,7 +350,7 @@ export default function LiveActivityFeed({
                 rel="noopener noreferrer"
                 className="flex-grow bg-dark-pastel-green text-zinc-900 font-bold text-xs sm:text-sm py-2 px-3 rounded-lg hover:bg-green-400 transition-all shadow-md flex items-center justify-center whitespace-nowrap"
               >
-                <span>Open in Spotify</span>
+                <span>Open</span>
               </a>
 
               {/* SECONDARY ACTION: Save to Library */}
@@ -344,7 +368,7 @@ export default function LiveActivityFeed({
                   }
                 `}
               >
-                {saveStatus === 'idle' && <span>Save Playlist</span>}
+                {saveStatus === 'idle' && <span>Save</span>}
                 {saveStatus === 'saving' && <span>Saving...</span>}
                 {saveStatus === 'saved' && (
                   <>
@@ -353,6 +377,16 @@ export default function LiveActivityFeed({
                   </>
                 )}
                 {saveStatus === 'error' && <span>Error</span>}
+              </button>
+
+              {/* EMAIL ACTION */}
+              <button
+                onClick={() => setIsEmailModalOpen(true)}
+                className="px-3 py-2 bg-transparent text-stone-100 border border-zinc-600 rounded-lg hover:bg-zinc-700 hover:border-zinc-500 transition-all flex items-center justify-center whitespace-nowrap"
+                title="Email playlist link"
+              >
+                <EnvelopeIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                <span className="ml-1 text-xs sm:text-sm hidden sm:inline">Email</span>
               </button>
 
               {/* CLOSE ACTION: X Icon */}
@@ -375,19 +409,6 @@ export default function LiveActivityFeed({
           </div>
         ) : (
           <>
-            <div className="flex items-center justify-center gap-2 mb-2">
-              <h2 className="text-xl font-bold text-pastel-yellow tracking-wide animate-pulse">
-                {status === 'pending' ? 'Queueing...' : 'Curating...'}
-              </h2>
-              {status === 'pending' && (
-                <div className="flex gap-1">
-                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                </div>
-              )}
-            </div>
-            
             {/* Queue Position Display */}
             {status === 'pending' && queuePosition !== null && queuePosition >= 0 && (
               <div className="mb-3 p-3 bg-amber-900/20 border border-amber-600/50 rounded-lg">
@@ -404,7 +425,7 @@ export default function LiveActivityFeed({
                 : hypeText}
             </p>
 
-            <div className="w-full max-w-[16rem] h-2 bg-zinc-700/50 rounded-full mx-auto overflow-hidden relative">
+            <div className="w-full max-w-[16rem] h-2 bg-zinc-700/50 rounded-full mx-auto overflow-hidden relative mb-4">
               {status === 'pending' ? (
                 <div className="bg-amber-500 h-full rounded-full animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.5)]" style={{ width: '30%' }} />
               ) : (
@@ -414,6 +435,34 @@ export default function LiveActivityFeed({
                 />
               )}
             </div>
+
+            {/* Email section below loading bar */}
+            {status === 'pending' ? (
+              /* Queueing phase - more explanatory text */
+              <div className="text-center space-y-3">
+                <p className="text-zinc-300 text-sm px-4">
+                  Don't want to wait? We can email you the playlist link when it's ready, so you can continue browsing or create another playlist.
+                </p>
+                <button
+                  onClick={() => setIsEmailModalOpen(true)}
+                  className="px-4 py-2.5 bg-dark-pastel-green text-zinc-900 font-semibold rounded-lg hover:bg-green-400 transition-colors flex items-center justify-center gap-2 mx-auto"
+                >
+                  <EnvelopeIcon className="w-5 h-5" />
+                  <span>Email Link When Ready</span>
+                </button>
+              </div>
+            ) : (
+              /* Curating phase - just button */
+              <div className="text-center">
+                <button
+                  onClick={() => setIsEmailModalOpen(true)}
+                  className="px-4 py-2 bg-transparent text-stone-100 border border-zinc-600 rounded-lg hover:bg-zinc-700 hover:border-zinc-500 transition-all flex items-center justify-center gap-2 mx-auto"
+                >
+                  <EnvelopeIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <span className="text-sm sm:text-base">Email Link to Playlist</span>
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -616,6 +665,15 @@ export default function LiveActivityFeed({
           )}
         </div>
       </div>
+
+      {/* Email Modal */}
+      <EmailModal
+        isOpen={isEmailModalOpen}
+        onClose={() => setIsEmailModalOpen(false)}
+        playlistId={playlistId}
+        jobId={jobId ? parseInt(jobId) : undefined}
+        userEmail={userEmail}
+      />
     </div>
   );
 }

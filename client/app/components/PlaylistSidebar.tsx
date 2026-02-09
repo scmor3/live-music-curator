@@ -6,8 +6,10 @@ import {
   CalendarIcon,
   MapPinIcon,
   TrashIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  EnvelopeIcon
  } from '@heroicons/react/24/outline';
+import EmailModal from './EmailModal';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -47,6 +49,33 @@ export default function PlaylistSidebar({ isOpen, onClose, onSelectPlaylist }: P
   const [error, setError] = useState('');
 
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | undefined>(undefined);
+  const [userEmail, setUserEmail] = useState<string | undefined>(undefined);
+
+  // Fetch user email for pre-filling
+  useEffect(() => {
+    const fetchUserEmail = async () => {
+      try {
+        const { data: { session } } = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+        ]);
+        if (session?.user?.email) {
+          setUserEmail(session.user.email);
+        }
+      } catch (err) {
+        // Continue without email if Supabase is unreachable
+      }
+    };
+    fetchUserEmail();
+  }, []);
+
+  const handleEmailClick = (e: React.MouseEvent, playlistId: string) => {
+    e.stopPropagation(); // Prevent clicking the row
+    setSelectedPlaylistId(playlistId);
+    setIsEmailModalOpen(true);
+  };
 
   // Refresh Handler
   const handleRefresh = async (e: React.MouseEvent, id: string) => {
@@ -251,6 +280,15 @@ export default function PlaylistSidebar({ isOpen, onClose, onSelectPlaylist }: P
                 {/* ACTION BUTTONS CONTAINER */}
                 <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                   
+                  {/* EMAIL BUTTON */}
+                  <button 
+                    onClick={(e) => handleEmailClick(e, playlist.spotify_playlist_id)}
+                    className="p-2 text-zinc-600 hover:text-dark-pastel-green hover:bg-zinc-700 rounded-full transition-colors"
+                    title="Email playlist link"
+                  >
+                    <EnvelopeIcon className="w-5 h-5" />
+                  </button>
+
                   {/* REFRESH BUTTON */}
                   <button 
                     onClick={(e) => handleRefresh(e, playlist.id)}
@@ -281,6 +319,17 @@ export default function PlaylistSidebar({ isOpen, onClose, onSelectPlaylist }: P
 
         </div>
       </div>
+
+      {/* Email Modal */}
+      <EmailModal
+        isOpen={isEmailModalOpen}
+        onClose={() => {
+          setIsEmailModalOpen(false);
+          setSelectedPlaylistId(undefined);
+        }}
+        playlistId={selectedPlaylistId}
+        userEmail={userEmail}
+      />
     </>
   );
 }

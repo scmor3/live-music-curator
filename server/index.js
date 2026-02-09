@@ -1925,8 +1925,9 @@ app.post('/api/email-playlist', async (req, res) => {
   const userId = await getUserIdFromRequest(req);
 
   // Validate required fields
-  if (!playlistId) {
-    return res.status(400).json({ error: 'Missing required field: playlistId' });
+  // playlistId is optional if jobId is provided (for pending playlists)
+  if (!playlistId && !jobId) {
+    return res.status(400).json({ error: 'Missing required field: playlistId or jobId must be provided' });
   }
 
   // Determine recipient email
@@ -2004,13 +2005,18 @@ app.post('/api/email-playlist', async (req, res) => {
     }
 
     // Check if playlist is ready (job is complete) or still building
-    const isPlaylistReady = job ? (job.status === 'complete' && job.playlist_id === playlistId) : true;
+    // If we have a job, check if it's complete and has a playlist_id
+    // If no job but we have playlistId, assume it's ready
+    const isPlaylistReady = job 
+      ? (job.status === 'complete' && job.playlist_id && (!playlistId || job.playlist_id === playlistId))
+      : (!!playlistId && playlistId !== 'pending');
 
     if (isPlaylistReady) {
       // Playlist is ready - send email immediately
+      const actualPlaylistId = job?.playlist_id || playlistId;
       const emailResult = await sendPlaylistEmail({
         to: recipientEmail,
-        playlistId,
+        playlistId: actualPlaylistId,
         cityName,
         playlistDate,
         artistCount,
@@ -2021,12 +2027,13 @@ app.post('/api/email-playlist', async (req, res) => {
 
       if (!emailResult.success) {
         // Save failed request to database
+        const actualPlaylistId = job?.playlist_id || playlistId;
         await sql`
           INSERT INTO email_requests (
             user_id, email, playlist_id, job_id, city_name, playlist_date,
             status, error_message
           ) VALUES (
-            ${userId}, ${recipientEmail}, ${playlistId}, ${jobId || null},
+            ${userId}, ${recipientEmail}, ${actualPlaylistId}, ${jobId || null},
             ${cityName}, ${playlistDate}, 'failed', ${emailResult.error}
           )
         `;
@@ -2038,30 +2045,38 @@ app.post('/api/email-playlist', async (req, res) => {
       }
 
       // Save successful request to database
+      const actualPlaylistIdForSave = job?.playlist_id || playlistId;
       await sql`
         INSERT INTO email_requests (
           user_id, email, playlist_id, job_id, city_name, playlist_date,
           status, sent_at
         ) VALUES (
-          ${userId}, ${recipientEmail}, ${playlistId}, ${jobId || null},
+          ${userId}, ${recipientEmail}, ${actualPlaylistIdForSave}, ${jobId || null},
           ${cityName}, ${playlistDate}, 'sent', NOW()
         )
       `;
 
-      logger.info(`Successfully sent email to ${recipientEmail} for playlist ${playlistId}`);
+      logger.info(`Successfully sent email to ${recipientEmail} for playlist ${actualPlaylistIdForSave}`);
       return res.json({ success: true, message: 'Email sent successfully' });
 
     } else {
       // Playlist is still building - save request as pending
+      // Only save if we have a jobId (required for deferred sending)
+      if (!jobId) {
+        return res.status(400).json({ 
+          error: 'Cannot save email request: jobId is required when playlist is not ready' 
+        });
+      }
+      
+      // playlistId is null because playlist isn't ready yet
       await sql`
         INSERT INTO email_requests (
           user_id, email, playlist_id, job_id, city_name, playlist_date,
           status
         ) VALUES (
-          ${userId}, ${recipientEmail}, ${playlistId}, ${jobId || null},
+          ${userId}, ${recipientEmail}, ${null}, ${jobId},
           ${cityName}, ${playlistDate}, 'pending'
         )
-        ON CONFLICT DO NOTHING
       `;
 
       logger.info(`Saved pending email request for ${recipientEmail} - will send when job ${jobId} completes`);
