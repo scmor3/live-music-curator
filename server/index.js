@@ -261,19 +261,27 @@ const typeOptions = {
   },
 };
 // Check which environment variables are available
+// Limit connection pool to prevent "max clients reached" errors
+// IMPORTANT: This must be <= your Supabase Pool Size setting
+// Default is 20
+// can override with MAX_DB_CONNECTIONS environment variable
+// Recommended: Set Supabase Pool Size to 20-25, then set MAX_DB_CONNECTIONS=18-22
+const MAX_CONNECTIONS = parseInt(process.env.MAX_DB_CONNECTIONS || '20', 10);
+
 if (process.env.DATABASE_URL) {
   // --- PRODUCTION ---
   // Render provides the DATABASE_URL. Use it.
-  logger.info('Connecting to database using DATABASE_URL...');
+  logger.info(`Connecting to database using DATABASE_URL (max connections: ${MAX_CONNECTIONS})...`);
   // We use postgres.options to merge our connection string with our new type option
   sql = postgres(process.env.DATABASE_URL, {
     ...typeOptions,
     onnotice: () => {},
+    max: MAX_CONNECTIONS, // Limit connection pool size
   });
 } else {
   // --- LOCAL ---
   // We're local. Use the .env file's separate variables.
-  logger.info('Connecting to database using local .env variables...');
+  logger.info(`Connecting to database using local .env variables (max connections: ${MAX_CONNECTIONS})...`);
   sql = postgres({
     host: process.env.DB_HOST,
     port: Number(process.env.DB_PORT),
@@ -281,6 +289,7 @@ if (process.env.DATABASE_URL) {
     user: process.env.DB_USER,
     password: process.env.DB_PASS,
     onnotice: () => {},
+    max: MAX_CONNECTIONS, // Limit connection pool size
     ...typeOptions, // <-- Add the new options here
   });
 }
@@ -1116,10 +1125,48 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
  * Finds one 'pending' job, runs it, and updates the DB.
  * Designed to be called repeatedly by a loop.
  */
+// Track connection usage for debugging
+let connectionCheckCounter = 0;
+const CONNECTION_LOG_INTERVAL = 60; // Log connection stats every 60 worker cycles
+
+async function logConnectionStats() {
+  try {
+    const stats = await sql`
+      SELECT 
+        count(*) as total,
+        count(*) FILTER (WHERE state = 'active') as active,
+        count(*) FILTER (WHERE state = 'idle') as idle,
+        count(*) FILTER (WHERE application_name LIKE 'postgres.js%') as postgres_js
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+    `;
+    const maxConn = await sql`
+      SELECT setting::int as max_connections
+      FROM pg_settings
+      WHERE name = 'max_connections'
+    `;
+    
+    const s = stats[0];
+    const max = maxConn[0]?.max_connections || 0;
+    const usagePercent = max > 0 ? ((Number(s.total) / max) * 100).toFixed(1) : 'unknown';
+    
+    logger.info(`[CONN-POOL] Total: ${s.total}/${max} (${usagePercent}%), Active: ${s.active}, Idle: ${s.idle}, From postgres.js: ${s.postgres_js}`);
+  } catch (err) {
+    logger.warn('[CONN-POOL] Failed to log connection stats:', err.message);
+  }
+}
+
 async function processJobQueue(workerId) {
   let job; // declared outside the 'try' so we can use it in 'catch'
   const logPrefix = `[Worker ${workerId}]`;
   logger.superDebug(`${logPrefix} (1/7): processJobQueue started.`);
+
+  // Periodically log connection stats
+  connectionCheckCounter++;
+  if (connectionCheckCounter >= CONNECTION_LOG_INTERVAL) {
+    connectionCheckCounter = 0;
+    await logConnectionStats();
+  }
 
   try {
     // find any job that's been "building" for too long
@@ -1143,6 +1190,14 @@ async function processJobQueue(workerId) {
     } catch (reaperError) {
       // If this fails, the DB is probably down. Log it and stop.
       logger.error(`${logPrefix} CRITICAL! Zombie reaper FAILED:`, reaperError.message);
+      
+      // Log connection stats when error occurs
+      try {
+        await logConnectionStats();
+      } catch (logErr) {
+        // Ignore logging errors
+      }
+      
       return; // Stop the worker run
     }
 
@@ -1331,6 +1386,110 @@ app.get('/api/keep-alive', (req, res) => {
       logger.warn('[KEEP-ALIVE] DB ping failed:', err.message);
     }
   })();
+});
+
+/**
+ * Debug endpoint to check database connection pool stats
+ * Shows current connections, limits, and pool configuration
+ */
+app.get('/api/debug/connections', async (req, res) => {
+  try {
+    // Get PostgreSQL connection stats
+    const connectionStats = await sql`
+      SELECT 
+        count(*) as total_connections,
+        count(*) FILTER (WHERE state = 'active') as active_connections,
+        count(*) FILTER (WHERE state = 'idle') as idle_connections,
+        count(*) FILTER (WHERE state = 'idle in transaction') as idle_in_transaction,
+        count(*) FILTER (WHERE application_name LIKE 'postgres.js%') as postgres_js_connections
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+    `;
+
+    // Get max connections setting
+    const maxConnections = await sql`
+      SELECT setting::int as max_connections
+      FROM pg_settings
+      WHERE name = 'max_connections'
+    `;
+
+    // Get connection limit for current user
+    const userConnLimit = await sql`
+      SELECT COALESCE(rolconnlimit, -1) as connection_limit
+      FROM pg_roles
+      WHERE rolname = current_user
+    `;
+
+    // Get detailed connection info
+    const detailedConnections = await sql`
+      SELECT 
+        pid,
+        usename,
+        application_name,
+        state,
+        query_start,
+        state_change,
+        wait_event_type,
+        wait_event,
+        backend_type
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+      ORDER BY state, query_start DESC
+      LIMIT 50
+    `;
+
+    const stats = connectionStats[0];
+    const maxConn = maxConnections[0]?.max_connections || 'unknown';
+    const userLimit = userConnLimit[0]?.connection_limit || -1;
+
+    // Calculate pool usage (if we can access the postgres.js pool)
+    let poolInfo = {
+      configured_max: MAX_CONNECTIONS,
+      note: 'Pool stats not directly accessible from postgres.js'
+    };
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      pool_configuration: {
+        max_connections_configured: MAX_CONNECTIONS,
+        environment_variable: process.env.MAX_DB_CONNECTIONS || 'not set (using default: 20)'
+      },
+      database_limits: {
+        max_connections_allowed: maxConn,
+        user_connection_limit: userLimit === -1 ? 'unlimited' : userLimit,
+        effective_limit: userLimit === -1 ? maxConn : Math.min(maxConn, userLimit)
+      },
+      current_connections: {
+        total: Number(stats.total_connections),
+        active: Number(stats.active_connections),
+        idle: Number(stats.idle_connections),
+        idle_in_transaction: Number(stats.idle_in_transaction),
+        from_postgres_js: Number(stats.postgres_js_connections),
+        from_other_sources: Number(stats.total_connections) - Number(stats.postgres_js_connections)
+      },
+      connection_usage_percentage: maxConn !== 'unknown' 
+        ? `${((Number(stats.total_connections) / maxConn) * 100).toFixed(2)}%`
+        : 'unknown',
+      detailed_connections: detailedConnections.map(conn => ({
+        pid: conn.pid,
+        user: conn.usename,
+        application: conn.application_name,
+        state: conn.state,
+        query_start: conn.query_start,
+        state_change: conn.state_change,
+        wait_event: conn.wait_event_type && conn.wait_event 
+          ? `${conn.wait_event_type}: ${conn.wait_event}` 
+          : null,
+        backend_type: conn.backend_type
+      }))
+    });
+  } catch (error) {
+    logger.error('Error getting connection stats:', error);
+    res.status(500).json({
+      error: 'Failed to get connection stats',
+      message: error.message
+    });
+  }
 });
 
 /**
