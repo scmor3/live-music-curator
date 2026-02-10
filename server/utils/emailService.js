@@ -1,11 +1,19 @@
 const { Resend } = require('resend');
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+
+// Only load .env file in local development (when DATABASE_URL is not set)
+// In production (Railway), environment variables are set directly
+if (!process.env.DATABASE_URL) {
+  require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+}
 
 // Initialize Resend client
 const resendApiKey = process.env.RESEND_API_KEY;
 if (!resendApiKey) {
   console.warn('⚠️  RESEND_API_KEY not found. Email functionality will be disabled.');
+  console.warn('   Environment check - DATABASE_URL:', process.env.DATABASE_URL ? 'set' : 'not set');
+  console.warn('   Available env vars with "RESEND":', Object.keys(process.env).filter(k => k.includes('RESEND')).join(', ') || 'none');
+  console.warn('   Available env vars with "EMAIL":', Object.keys(process.env).filter(k => k.includes('EMAIL')).join(', ') || 'none');
 }
 
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
