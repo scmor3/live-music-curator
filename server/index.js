@@ -539,6 +539,91 @@ function formatHourShort(hour) {
 }
 
 /**
+ * Determines if a playlist should be refreshed based on dynamic time-based thresholds.
+ * @param {Object} job - Job object with updated_at and search_date
+ * @param {Date} currentDate - Current date (defaults to now)
+ * @returns {Object} - { shouldRefresh: boolean, reason: string }
+ */
+function shouldRefreshPlaylist(job, currentDate = new Date()) {
+  const updatedAt = new Date(job.updated_at);
+  const searchDate = new Date(job.search_date);
+  
+  // Calculate days until event (can be negative if event is in the past)
+  const daysUntilEvent = Math.ceil((searchDate - currentDate) / (1000 * 60 * 60 * 24));
+  
+  // Calculate time since last update
+  const timeSinceUpdate = currentDate - updatedAt;
+  const daysSinceUpdate = timeSinceUpdate / (1000 * 60 * 60 * 24);
+  const hoursSinceUpdate = timeSinceUpdate / (1000 * 60 * 60);
+  
+  // Apply dynamic thresholds
+  if (daysUntilEvent > 14) {
+    if (daysSinceUpdate > 3) {
+      return { 
+        shouldRefresh: true, 
+        reason: `Event is ${daysUntilEvent} days away and playlist is ${Math.round(daysSinceUpdate * 10) / 10} days old (>3 day threshold)` 
+      };
+    }
+  } else if (daysUntilEvent >= 7 && daysUntilEvent <= 14) {
+    if (daysSinceUpdate > 2) {
+      return { 
+        shouldRefresh: true, 
+        reason: `Event is ${daysUntilEvent} days away and playlist is ${Math.round(daysSinceUpdate * 10) / 10} days old (>2 day threshold)` 
+      };
+    }
+  } else if (daysUntilEvent > 1 && daysUntilEvent < 7) {
+    if (daysSinceUpdate > 1) {
+      return { 
+        shouldRefresh: true, 
+        reason: `Event is ${daysUntilEvent} days away and playlist is ${Math.round(daysSinceUpdate * 10) / 10} days old (>1 day threshold)` 
+      };
+    }
+  } else if (daysUntilEvent <= 1) {
+    // For today/tomorrow events, use 1 hour buffer
+    if (hoursSinceUpdate > 1) {
+      return { 
+        shouldRefresh: true, 
+        reason: `Event is ${daysUntilEvent <= 0 ? 'today' : 'tomorrow'} and playlist is ${Math.round(hoursSinceUpdate * 10) / 10} hours old (>1 hour threshold)` 
+      };
+    }
+  }
+  
+  return { 
+    shouldRefresh: false, 
+    reason: `Playlist is fresh (${daysUntilEvent} days until event, ${Math.round(daysSinceUpdate * 10) / 10} days since update)` 
+  };
+}
+
+/**
+ * Finds new artists in the new events list that weren't in the old events list.
+ * @param {Array} oldEvents - Array of event objects from previous curation
+ * @param {Array} newEvents - Array of event objects from fresh scrape
+ * @returns {Array} - Array of new event objects (artists not in old list)
+ */
+function findNewArtists(oldEvents, newEvents) {
+  if (!oldEvents || oldEvents.length === 0) {
+    // If no old events, all new events are "new"
+    return newEvents || [];
+  }
+  
+  // Normalize artist names: lowercase and trim
+  const normalizeName = (name) => (name || '').toLowerCase().trim();
+  
+  // Create Set of old artist names for fast lookup
+  const oldArtistNames = new Set(
+    oldEvents.map(event => normalizeName(event.name))
+  );
+  
+  // Filter new events to only those with artist names not in old set
+  const newArtists = (newEvents || []).filter(event => {
+    const normalizedName = normalizeName(event.name);
+    return !oldArtistNames.has(normalizedName);
+  });
+  
+  return newArtists;
+}
+
+/**
  * Creates a new playlist, finds/adds tracks, and saves all results to the DB.
  */
 async function runCurationLogic(jobId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, maxStartTime, workerId) {
@@ -1122,6 +1207,429 @@ async function runCurationLogic(jobId, city, date, number_of_songs, accessToken,
 }
 
 /**
+ * Updates an existing playlist by adding new artists' tracks.
+ * Similar to runCurationLogic() but:
+ * - Uses existing playlist_id (doesn't create new playlist)
+ * - Only processes new artists (filters out artists already in oldEventsData)
+ * - Merges old and new events_data
+ * @param {number} jobId - Job ID for logging
+ * @param {string} existingPlaylistId - Existing Spotify playlist ID to update
+ * @param {string} city - City name
+ * @param {string} date - Event date
+ * @param {number} number_of_songs - Number of songs per artist
+ * @param {string} accessToken - Spotify access token
+ * @param {number} latitude - Latitude for scraping
+ * @param {number} longitude - Longitude for scraping
+ * @param {Array} excludedGenres - Array of genres to exclude
+ * @param {number} minStartTime - Minimum event start time (hours)
+ * @param {number} maxStartTime - Maximum event start time (hours)
+ * @param {Array} oldEventsData - Previous events_data from original curation
+ * @param {number} workerId - Worker ID for logging
+ * @returns {Object} - { playlistId: string, events: Array } (merged events)
+ */
+async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, number_of_songs, accessToken, latitude, longitude, excludedGenres, minStartTime, maxStartTime, oldEventsData, workerId) {
+  const logPrefix = `[Worker ${workerId}]`;
+  const SPOTIFY_API_DELAY_MS = parseInt(process.env.SPOTIFY_API_DELAY_MS || '1000', 10);
+  
+  // Get fresh data from scraper
+  let rawEventsList;
+  try {
+    rawEventsList = await scrapeBandsintown(date, latitude, longitude, workerId);
+  } catch (scraperError) {
+    // If scraper fails, return old data (stale data is better than nothing)
+    logger.warn(`${logPrefix} Scraper failed during update. Returning existing playlist data. Error: ${scraperError.message}`);
+    return { playlistId: existingPlaylistId, events: oldEventsData || [] };
+  }
+
+  // --- Time Filter Logic (same as runCurationLogic) ---
+  let timeFilteredEvents = rawEventsList;
+  const minHour = minStartTime ? parseInt(minStartTime) : 0;
+  const maxHour = maxStartTime ? parseInt(maxStartTime) : 24;
+
+  if (minHour > 0 || maxHour < 24) {
+    timeFilteredEvents = rawEventsList.filter(event => {
+      if (!event.date || !event.date.includes('T')) return true;
+      try {
+        const timePart = event.date.split('T')[1];
+        const hourStr = timePart.split(':')[0];
+        const hour = parseInt(hourStr, 10);
+        return hour >= minHour && hour < maxHour;
+      } catch (e) {
+        return true;
+      }
+    });
+    logger.info(`${logPrefix} Time Filter (${minHour}:00 - ${maxHour}:00): Reduced ${rawEventsList.length} events to ${timeFilteredEvents.length}.`);
+  }
+
+  const prettyDate = formatDatePretty(date);
+  
+  // Check if we found any artists
+  if (!timeFilteredEvents || timeFilteredEvents.length === 0) {
+    logger.info(`${logPrefix} No new artists found for "${city}" on ${prettyDate} (after time filtering).`);
+    // Still return old events (playlist stays as is)
+    return { playlistId: existingPlaylistId, events: oldEventsData || [] };
+  }
+
+  // --- Deduplication Logic (same as runCurationLogic) ---
+  const uniqueEventsMap = new Map();
+  timeFilteredEvents.forEach(event => {
+    const key = event.name.toLowerCase().trim();
+    if (!uniqueEventsMap.has(key)) {
+      uniqueEventsMap.set(key, event);
+    }
+  });
+  const uniqueEvents = Array.from(uniqueEventsMap.values());
+
+  // --- Find NEW artists only (this is the key difference) ---
+  const newArtists = findNewArtists(oldEventsData || [], uniqueEvents);
+  
+  if (newArtists.length === 0) {
+    logger.info(`${logPrefix} No new artists found. Playlist is up to date.`);
+    // Merge anyway (in case event details changed, but no new artists)
+    const mergedEvents = [...(oldEventsData || []), ...uniqueEvents];
+    // Deduplicate merged events
+    const mergedMap = new Map();
+    mergedEvents.forEach(event => {
+      const key = event.name.toLowerCase().trim();
+      if (!mergedMap.has(key)) {
+        mergedMap.set(key, event);
+      }
+    });
+    const finalMergedEvents = Array.from(mergedMap.values());
+    
+    // Update job with merged events (even if no new artists, event details might have changed)
+    try {
+      await sql`
+        UPDATE playlist_jobs 
+        SET events_data = ${sql.json(finalMergedEvents)}, updated_at = NOW()
+        WHERE id = ${jobId};
+      `;
+    } catch (saveErr) {
+      logger.warn(`${logPrefix} Failed to save merged events data: ${saveErr.message}`);
+    }
+    
+    await updateJobLog(jobId, `Playlist is up to date. No new artists found.`, 0, 0);
+    return { playlistId: existingPlaylistId, events: finalMergedEvents };
+  }
+
+  logger.info(`${logPrefix} Found ${newArtists.length} new artists out of ${uniqueEvents.length} total. Processing new artists only...`);
+  
+  // Save initial new artists count to DB
+  try {
+    await sql`
+      UPDATE playlist_jobs 
+      SET events_data = ${sql.json(uniqueEvents)}, total_artists = ${newArtists.length}, processed_artists = 0
+      WHERE id = ${jobId};
+    `;
+  } catch (saveErr) {
+    logger.warn(`${logPrefix} Failed to save initial events data: ${saveErr.message}`);
+  }
+
+  await updateJobLog(jobId, `Found ${newArtists.length} new artists in ${city} on ${prettyDate}`, 0, newArtists.length);
+
+  // --- Genre Synonym Map (same as runCurationLogic) ---
+  const genreSynonymMap = {
+    'hip hop': ['rap'],
+    'r&b': ['soul'],
+    'electronic': ['edm', 'techno', 'house', 'dubstep', 'trance', 'psytrance', 'downtempo', 'bass music', 'riddim'],
+    'punk': ['hardcore', 'post-punk', 'screamo', 'emo'],
+    'latin': ['reggaeton', 'cumbia', 'banda', 'sertanejo', 'dembow', 'grupera', 'duranguense', 'piseiro'],
+    'blues': ['boogie-woogie'],
+    'folk': ['americana'],
+    'classical': ['orchestral']
+  };
+
+  let expandedExcludedGenres = [...(excludedGenres || [])];
+  if (excludedGenres) {
+    excludedGenres.forEach(genre => {
+      if (genreSynonymMap[genre]) {
+        expandedExcludedGenres = [...expandedExcludedGenres, ...genreSynonymMap[genre]];
+      }
+    });
+  }
+
+  // --- Process only NEW artists (same logic as runCurationLogic but only for newArtists) ---
+  const processedArtistIds = new Set();
+  const retryCounts = {};
+  let tracksAddedCount = 0;
+
+  const BATCH_SIZE = 100;
+  const trackBatch = [];
+  const batchArtistNames = [];
+  
+  const axiosConfig = {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    }
+  };
+
+  const flushBatch = async () => {
+    if (trackBatch.length === 0) return;
+    
+    const MAX_BATCH_RETRIES = 3;
+    let retryCount = 0;
+    let success = false;
+    
+    while (retryCount < MAX_BATCH_RETRIES && !success) {
+      try {
+        await waitForRateLimit(logPrefix);
+        await sleep(SPOTIFY_API_DELAY_MS);
+        
+        await axios.post(
+          `https://api.spotify.com/v1/playlists/${existingPlaylistId}/tracks`,
+          { uris: trackBatch },
+          axiosConfig
+        );
+        
+        logger.info(`${logPrefix} [BATCH] Successfully added ${trackBatch.length} tracks to playlist (${batchArtistNames.length} artists)`);
+        tracksAddedCount += trackBatch.length;
+        success = true;
+        
+        trackBatch.length = 0;
+        batchArtistNames.length = 0;
+      } catch (batchError) {
+        const batchStatus = batchError.response ? batchError.response.status : null;
+        retryCount++;
+        
+        const isRetryable = batchStatus === 429 || (batchStatus >= 500 && batchStatus < 600);
+        
+        if (isRetryable && retryCount < MAX_BATCH_RETRIES) {
+          if (batchStatus === 429) {
+            const retryAfterSeconds = batchError.response?.headers?.['retry-after'] || 
+                                     batchError.response?.headers?.['Retry-After'] || 5;
+            logger.warn(`${logPrefix} [RATE-LIMIT] Batch POST 429 - Headers: ${JSON.stringify(batchError.response?.headers)}`);
+            setGlobalRateLimit(retryAfterSeconds, logPrefix);
+            await waitForRateLimit(logPrefix);
+            logger.warn(`${logPrefix} [BATCH] Retrying after global rate limit cleared. Retry ${retryCount}/${MAX_BATCH_RETRIES}...`);
+          } else {
+            const waitMs = Math.max(3000 * Math.pow(2, retryCount - 1), 3000);
+            logger.warn(`${logPrefix} [BATCH] Failed to add ${trackBatch.length} tracks. Status: ${batchStatus}. Retry ${retryCount}/${MAX_BATCH_RETRIES} in ${waitMs/1000}s...`);
+            await sleep(waitMs);
+          }
+        } else {
+          logger.error(`${logPrefix} [BATCH] Failed to add ${trackBatch.length} tracks (${batchArtistNames.length} artists). Status: ${batchStatus}. Giving up after ${retryCount} attempts.`);
+          
+          const failedArtistsList = batchArtistNames.slice(0, 5).join(', ');
+          const moreArtists = batchArtistNames.length > 5 ? ` and ${batchArtistNames.length - 5} more` : '';
+          await updateJobLog(
+            jobId,
+            `WARNING: Failed to add tracks for ${batchArtistNames.length} artists (${failedArtistsList}${moreArtists}). Some tracks may be missing from playlist.`,
+            null,
+            null
+          );
+          
+          trackBatch.length = 0;
+          batchArtistNames.length = 0;
+          break;
+        }
+      }
+    }
+  };
+
+  // --- Loop over NEW artists only ---
+  for (let i = 0; i < newArtists.length; i++) {
+    const eventObj = newArtists[i];
+    const artistName = eventObj.name;
+
+    if (i % 5 === 0) {
+      const memoryUsage = process.memoryUsage();
+      const heapUsedMB = Math.round(memoryUsage.heapUsed / 1024 / 1024 * 100) / 100;
+      const rssMB = Math.round(memoryUsage.rss / 1024 / 1024 * 100) / 100;
+      logger.debug(`${logPrefix} [MEMORY] Artist ${i}/${newArtists.length} - Heap: ${heapUsedMB} MB | RSS: ${rssMB} MB`);
+    }
+    
+    logger.info(`${logPrefix} [${i + 1}/${newArtists.length}] Processing new artist: "${artistName}"`);
+    
+    await waitForRateLimit(logPrefix);
+    
+    if (i > 0 || retryCounts[artistName] === undefined) {
+      await sleep(SPOTIFY_API_DELAY_MS);
+    }
+    
+    try {
+      const searchResponse = await axios.get(
+        `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        }
+      );
+
+      const potentialMatches = searchResponse.data.artists.items;
+      if (potentialMatches.length === 0) {
+        logger.info(`${logPrefix}   -> No Spotify results for "${artistName}".`);
+        await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, newArtists.length);
+        continue;
+      }
+
+      let bestMatch = null;
+      for (const match of potentialMatches) {
+        if (match.name.toLowerCase() === artistName.toLowerCase()) {
+          bestMatch = match;
+          break;
+        }
+      }
+
+      let spotifyArtistId = null;
+
+      if (bestMatch) {
+        spotifyArtistId = bestMatch.id;
+        logger.info(`${logPrefix}   -> Found Exact Match: "${bestMatch.name}" (ID: ${spotifyArtistId}) & genres: ${bestMatch.genres.join(', ')}`);
+      } else {
+        let closestMatch = null;
+        let minDistance = Infinity;
+
+        for (const match of potentialMatches) {
+          const distance = levenshtein.get(artistName.toLowerCase(), match.name.toLowerCase());
+          if (distance < minDistance) {
+            minDistance = distance;
+            closestMatch = match;
+          }
+        }
+        
+        const SIMILARITY_THRESHOLD = 1;
+        if (closestMatch && minDistance <= SIMILARITY_THRESHOLD) {
+          bestMatch = closestMatch;
+          spotifyArtistId = bestMatch.id;
+          logger.info(`${logPrefix}   -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
+        } else {
+          logger.warn(`${logPrefix} No close match for "${artistName}". Skipping.`);
+          await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, i, newArtists.length);
+        }
+      }
+
+      // Genre Filtering Logic
+      if (excludedGenres && excludedGenres.length > 0 && bestMatch && bestMatch.genres && bestMatch.genres.length > 0) {
+        const hasExcludedGenre = excludedGenres.some(excludedGenre => 
+          bestMatch.genres.some(artistGenre => 
+            artistGenre.toLowerCase().includes(excludedGenre.toLowerCase())
+          )
+        );
+
+        if (hasExcludedGenre) {
+          logger.info(`${logPrefix}   -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
+          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (Genre: ${bestMatch.genres[0]})`, i, newArtists.length);
+          spotifyArtistId = null;
+        }
+    }
+
+      if (spotifyArtistId) {
+        if (processedArtistIds.has(spotifyArtistId)) {
+          logger.info(`${logPrefix} Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
+          continue;
+        }
+        
+        await waitForRateLimit(logPrefix);
+        await sleep(SPOTIFY_API_DELAY_MS);
+        
+        const topTracksResponse = await axios.get(
+          `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks`, {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+          }
+        );
+        const tracksToAdd = topTracksResponse.data.tracks.slice(0, number_of_songs);
+        const trackUris = tracksToAdd.map(track => track.uri);
+
+        if (trackUris.length > 0) {
+          const logName = artistName;
+          
+          await updateJobLog(jobId, `ARTIST:${logName}`, i, newArtists.length);
+          logger.info(`${logPrefix}   -> Found ${trackUris.length} tracks for "${logName}". Adding to batch...`);
+
+          trackBatch.push(...trackUris);
+          batchArtistNames.push(logName);
+          
+          processedArtistIds.add(spotifyArtistId);
+
+          if (trackBatch.length >= BATCH_SIZE) {
+            await flushBatch();
+          }
+        } else {
+          logger.info(`${logPrefix}   -> Found artist, but they have no top tracks. Skipping track add.`);
+          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, i, newArtists.length);
+          processedArtistIds.add(spotifyArtistId);
+        }
+      }
+    } catch (error) {
+      const status = error.response ? error.response.status : null;
+      const retryableErrorCodes = [429, 500, 502, 503, 504];
+
+      if (status && retryableErrorCodes.includes(status)) {
+        const currentRetries = retryCounts[artistName] || 0;
+        const MAX_RETRIES = 3;
+
+        if (currentRetries < MAX_RETRIES) {
+          retryCounts[artistName] = currentRetries + 1;
+          
+          let waitMs = 3000;
+          let waitReason = `${status} server error`;
+
+          if (status === 429) {
+            const retryAfterSeconds = error.response?.headers?.['retry-after'] || 
+                                     error.response?.headers?.['Retry-After'] || 5;
+            logger.warn(`${logPrefix} [RATE-LIMIT] Artist search 429 - Headers: ${JSON.stringify(error.response?.headers)}`);
+            setGlobalRateLimit(retryAfterSeconds, logPrefix);
+            await waitForRateLimit(logPrefix);
+            waitReason = `429 rate limit (global coordination)`;
+            waitMs = 0;
+          } else {
+            const exponentialMultiplier = Math.pow(2, currentRetries);
+            waitMs = Math.max(3000 * exponentialMultiplier, 3000);
+          }
+
+          if (waitMs > 0) {
+            logger.warn(`${logPrefix} Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Waiting ${waitMs / 1000}s for artist "${artistName}"...`);
+            await sleep(waitMs);
+          } else {
+            logger.warn(`${logPrefix} Spotify ${waitReason}. (Retry ${currentRetries + 1}/${MAX_RETRIES}) Retrying artist "${artistName}" after global rate limit cleared...`);
+          }
+          
+          i--;
+          logger.info(`${logPrefix} Retrying artist "${artistName}"...`);
+        } else {
+          logger.error(`${logPrefix} Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
+        }
+      } else {
+        logger.error(`${logPrefix} Error processing artist "${artistName}":`, error.message);
+      }
+    }
+  }
+
+  // Flush any remaining tracks
+  if (trackBatch.length > 0) {
+    logger.info(`${logPrefix} [BATCH] Flushing final batch of ${trackBatch.length} tracks (${batchArtistNames.length} artists)...`);
+    await flushBatch();
+  }
+
+  // --- Merge old and new events ---
+  const mergedEvents = [...(oldEventsData || []), ...uniqueEvents];
+  // Deduplicate merged events (in case event details changed)
+  const mergedMap = new Map();
+  mergedEvents.forEach(event => {
+    const key = event.name.toLowerCase().trim();
+    if (!mergedMap.has(key)) {
+      mergedMap.set(key, event);
+    }
+  });
+  const finalMergedEvents = Array.from(mergedMap.values());
+
+  // Update job with merged events
+  try {
+    await sql`
+      UPDATE playlist_jobs 
+      SET events_data = ${sql.json(finalMergedEvents)}, updated_at = NOW()
+      WHERE id = ${jobId};
+    `;
+  } catch (saveErr) {
+    logger.warn(`${logPrefix} Failed to save merged events data: ${saveErr.message}`);
+  }
+
+  await updateJobLog(jobId, `Update complete. Added ${tracksAddedCount} tracks from ${newArtists.length} new artists.`, newArtists.length, newArtists.length);
+  logger.info(`${logPrefix} Update complete. Total tracks added: ${tracksAddedCount}. Merged ${oldEventsData?.length || 0} old events with ${uniqueEvents.length} new events.`);
+  
+  return { playlistId: existingPlaylistId, events: finalMergedEvents };
+}
+
+/**
  * Finds one 'pending' job, runs it, and updates the DB.
  * Designed to be called repeatedly by a loop.
  */
@@ -1201,16 +1709,16 @@ async function processJobQueue(workerId) {
       return; // Stop the worker run
     }
 
-    logger.superDebug(`${logPrefix} (4/7): Looking for a pending job...`);
+    logger.superDebug(`${logPrefix} (4/7): Looking for a pending or updating job...`);
     // Find and "Lock" a Job
-    // Find a pending job and update its status
+    // Find a pending or updating job and update its status
     // This prevents two workers from accidentally grabbing the same job.
     job = await sql.begin(async sql => {
       
-      // Find the oldest 'pending' job.
+      // Find the oldest 'pending' or 'updating' job.
       const pendingJobs = await sql`
         SELECT * FROM playlist_jobs 
-        WHERE status = 'pending' 
+        WHERE status IN ('pending', 'updating')
         ORDER BY created_at ASC 
         LIMIT 1
         FOR UPDATE SKIP LOCKED;
@@ -1222,7 +1730,7 @@ async function processJobQueue(workerId) {
 
       const jobToProcess = pendingJobs[0];
 
-      // "Lock" the job by updating its status
+      // "Lock" the job by updating its status to 'building'
       const lockedJob = await sql`
         UPDATE playlist_jobs 
         SET status = 'building'
@@ -1234,29 +1742,65 @@ async function processJobQueue(workerId) {
     });
 
     if (!job) {
-      logger.superDebug(`${logPrefix} (5/7): No pending jobs found.`);
+      logger.superDebug(`${logPrefix} (5/7): No pending or updating jobs found.`);
       return; // No jobs to do, so just stop here.
     }
 
-    // Process the Job
-    logger.info(`${logPrefix} (6/7): Picked up job ${job.id}. Calling runCurationLogic on "${job.search_city}" on ${job.search_date}`);
-    
     const accessToken = await getMasterAccessToken();
 
-    // Run our curation logic with the job's data
-    const { playlistId, events } = await runCurationLogic(
-      job.id,
-      job.search_city,
-      job.search_date,
-      job.number_of_songs,
-      accessToken,
-      job.latitude,
-      job.longitude,
-      job.excluded_genres,
-      job.min_start_time,
-      job.max_start_time,
-      workerId
-    );
+    // Check if this is an update job (has existing playlist_id and events_data)
+    const isUpdateJob = job.playlist_id && job.events_data && Array.isArray(job.events_data) && job.events_data.length > 0;
+
+    let playlistId, events;
+
+    if (isUpdateJob) {
+      // Process the Update Job
+      logger.info(`${logPrefix} (6/7): Picked up UPDATE job ${job.id}. Calling updateExistingPlaylist on "${job.search_city}" on ${job.search_date}`);
+      
+      // Extract old events_data (stored when update job was created)
+      const oldEventsData = job.events_data;
+      
+      // Run update logic with the job's data
+      const result = await updateExistingPlaylist(
+        job.id,
+        job.playlist_id,  // Existing playlist to update
+        job.search_city,
+        job.search_date,
+        job.number_of_songs,
+        accessToken,
+        job.latitude,
+        job.longitude,
+        job.excluded_genres,
+        job.min_start_time,
+        job.max_start_time,
+        oldEventsData,  // Old events for comparison
+        workerId
+      );
+      
+      playlistId = result.playlistId;
+      events = result.events;
+    } else {
+      // Process the New Job
+      logger.info(`${logPrefix} (6/7): Picked up job ${job.id}. Calling runCurationLogic on "${job.search_city}" on ${job.search_date}`);
+      
+      // Run our curation logic with the job's data
+      const result = await runCurationLogic(
+        job.id,
+        job.search_city,
+        job.search_date,
+        job.number_of_songs,
+        accessToken,
+        job.latitude,
+        job.longitude,
+        job.excluded_genres,
+        job.min_start_time,
+        job.max_start_time,
+        workerId
+      );
+      
+      playlistId = result.playlistId;
+      events = result.events;
+    }
 
     // Handle Success
     logger.info(`${logPrefix} (7/7): Curation logic complete for job ${job.id}. PlaylistID: ${playlistId}`);
@@ -1672,7 +2216,7 @@ app.get('/api/playlists', async (req, res) => {
   // We fetch 'updated_at' to check for staleness.
   try {
     const existingJob = await sql`
-      SELECT id, status, playlist_id, updated_at 
+      SELECT id, status, playlist_id, updated_at, search_date, events_data
       FROM playlist_jobs 
       WHERE 
         search_city = ${city} AND 
@@ -1708,8 +2252,59 @@ app.get('/api/playlists', async (req, res) => {
         logger.info(`Cache HIT (Job ${job.id}): Previous job failed. Creating new job to allow retry.`);
         // Fall through to create a new job below
         
+      } else if (job.status === 'complete' && job.playlist_id) {
+        // Check if the completed playlist is stale and needs refreshing
+        const refreshCheck = shouldRefreshPlaylist(job);
+        
+        if (refreshCheck.shouldRefresh) {
+          logger.info(`Cache HIT (Job ${job.id}): Playlist is stale. ${refreshCheck.reason}. Creating update job...`);
+          
+          // Create an update job that will use the existing playlist_id
+          // We'll store the existing playlist_id in the job's playlist_id field
+          // and the old events_data will be fetched from the original job
+          const updateJob = await sql`
+            INSERT INTO playlist_jobs (
+              search_city,
+              search_date,
+              latitude,
+              longitude,
+              number_of_songs,
+              excluded_genres,
+              min_start_time,
+              max_start_time,
+              playlist_id,  -- Store existing playlist_id for update mode
+              updated_at,
+              owner_id,
+              status,
+              events_data  -- Store old events_data for comparison
+            ) VALUES (
+              ${city},
+              ${date},
+              ${latitude},
+              ${longitude},
+              ${number_of_songs},
+              ${genresArray},
+              ${minStartTime || 0},
+              ${maxStartTime || 24},
+              ${job.playlist_id},  -- Existing playlist to update
+              NOW(),
+              ${ownerId},
+              'updating',  -- Special status to indicate this is an update job
+              ${sql.json(job.events_data || [])}  -- Old events_data for comparison
+            )
+            RETURNING id;
+          `;
+          
+          const updateJobId = updateJob[0].id;
+          logger.info(`Created update job ${updateJobId} for existing playlist ${job.playlist_id}`);
+          return res.status(202).json({ jobId: updateJobId });
+        } else {
+          // Playlist is fresh, return existing job
+          logger.info(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}. ${refreshCheck.reason}`);
+          return res.json({ jobId: job.id });
+        }
       } else {
-        // It's a valid running job or a completed job. Return it.
+        // It's a valid running job (pending or building). Return it.
         logger.info(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}`);
         return res.json({ jobId: job.id });
       }
@@ -1791,22 +2386,22 @@ app.get('/api/playlists/status', async (req, res) => {
 
     const job = jobResult[0];
 
-    // Calculate queue position: count how many pending jobs have a lower ID (were created before this one)
+    // Calculate queue position: count how many pending/updating jobs have a lower ID (were created before this one)
     // Using ID instead of created_at because IDs are sequential and unique, avoiding timestamp precision issues
     let queuePosition = 0;
-    if (job.status === 'pending') {
-      // First, let's get all pending jobs to debug
+    if (job.status === 'pending' || job.status === 'updating') {
+      // First, let's get all pending/updating jobs to debug
       const allPendingJobs = await sql`
         SELECT id, status, created_at
         FROM playlist_jobs
-        WHERE status = 'pending'
+        WHERE status IN ('pending', 'updating')
         ORDER BY id ASC
       `;
       
       const queueCount = await sql`
         SELECT COUNT(*) as count
         FROM playlist_jobs
-        WHERE status = 'pending'
+        WHERE status IN ('pending', 'updating')
         AND id < ${job.id}
       `;
       queuePosition = Number(queueCount[0]?.count) || 0;
@@ -2015,53 +2610,108 @@ app.post('/api/my-playlists/:id/refresh', async (req, res) => {
       return res.status(400).json({ error: 'This saved playlist is outdated (missing coordinates). Please delete it and create a new one.' });
     }
 
-    // 3. Create a "Shadow Job" for logging/tracking
-    const newJob = await sql`
-      INSERT INTO playlist_jobs (
-        search_city, search_date, latitude, longitude, number_of_songs, 
-        min_start_time, max_start_time, excluded_genres, 
-        owner_id, status
-      ) VALUES (
-        ${saved.city_name}, ${saved.playlist_date}, 
-        ${saved.latitude}, ${saved.longitude}, -- <--- FIX 1: Use 'saved.latitude'
-        1,
-        ${saved.min_start_time || 0}, ${saved.max_start_time || 24}, ${saved.excluded_genres},
-        ${userId}, 'building'
-      )
-      RETURNING id;
-    `;
-    const jobId = newJob[0].id;
-
-    // 4. Run the Logic
     const accessToken = await getMasterAccessToken();
-    const { playlistId, events } = await runCurationLogic(
-      jobId,
-      saved.city_name,
-      saved.playlist_date,
-      1,
-      accessToken,
-      saved.latitude,   // <--- FIX 2: Use 'saved.latitude'
-      saved.longitude,  // <--- FIX 3: Use 'saved.longitude'
-      saved.excluded_genres,
-      saved.min_start_time,
-      saved.max_start_time,
-      99 
-    );
+    let playlistId, events;
 
-    // 5. Update the Saved Playlist with new results
+    // 3. Check if we have an existing playlist to update
+    if (saved.spotify_playlist_id) {
+      // Use update mode: add new artists to existing playlist
+      logger.info(`Refreshing saved playlist ${id} using UPDATE mode for existing playlist ${saved.spotify_playlist_id}`);
+      
+      // Create a "Shadow Job" for logging/tracking (with update status)
+      const updateJob = await sql`
+        INSERT INTO playlist_jobs (
+          search_city, search_date, latitude, longitude, number_of_songs, 
+          min_start_time, max_start_time, excluded_genres, 
+          playlist_id, events_data, owner_id, status
+        ) VALUES (
+          ${saved.city_name}, ${saved.playlist_date}, 
+          ${saved.latitude}, ${saved.longitude},
+          1,
+          ${saved.min_start_time || 0}, ${saved.max_start_time || 24}, ${saved.excluded_genres},
+          ${saved.spotify_playlist_id},  -- Existing playlist to update
+          ${sql.json(saved.events_snapshot || [])},  -- Old events for comparison
+          ${userId}, 'building'
+        )
+        RETURNING id;
+      `;
+      const jobId = updateJob[0].id;
+
+      // Run update logic
+      const result = await updateExistingPlaylist(
+        jobId,
+        saved.spotify_playlist_id,  // Existing playlist to update
+        saved.city_name,
+        saved.playlist_date,
+        1,
+        accessToken,
+        saved.latitude,
+        saved.longitude,
+        saved.excluded_genres,
+        saved.min_start_time,
+        saved.max_start_time,
+        saved.events_snapshot || [],  // Old events for comparison
+        99  // Worker ID for logging
+      );
+
+      playlistId = result.playlistId;
+      events = result.events;
+
+      // Mark Job Complete
+      await sql`UPDATE playlist_jobs SET status = 'complete', playlist_id = ${playlistId}, events_data = ${sql.json(events)} WHERE id = ${jobId}`;
+    } else {
+      // Edge case: No existing playlist_id, create new one (fallback)
+      logger.info(`Refreshing saved playlist ${id} but no existing playlist_id found. Creating new playlist.`);
+      
+      // Create a "Shadow Job" for logging/tracking
+      const newJob = await sql`
+        INSERT INTO playlist_jobs (
+          search_city, search_date, latitude, longitude, number_of_songs, 
+          min_start_time, max_start_time, excluded_genres, 
+          owner_id, status
+        ) VALUES (
+          ${saved.city_name}, ${saved.playlist_date}, 
+          ${saved.latitude}, ${saved.longitude},
+          1,
+          ${saved.min_start_time || 0}, ${saved.max_start_time || 24}, ${saved.excluded_genres},
+          ${userId}, 'building'
+        )
+        RETURNING id;
+      `;
+      const jobId = newJob[0].id;
+
+      // Run the Logic (create new playlist)
+      const result = await runCurationLogic(
+        jobId,
+        saved.city_name,
+        saved.playlist_date,
+        1,
+        accessToken,
+        saved.latitude,
+        saved.longitude,
+        saved.excluded_genres,
+        saved.min_start_time,
+        saved.max_start_time,
+        99 
+      );
+
+      playlistId = result.playlistId;
+      events = result.events;
+
+      // Mark Job Complete
+      await sql`UPDATE playlist_jobs SET status = 'complete', playlist_id = ${playlistId} WHERE id = ${jobId}`;
+    }
+
+    // 4. Update the Saved Playlist with new results
     await sql`
       UPDATE saved_playlists SET
         spotify_playlist_id = ${playlistId},
         events_snapshot = ${sql.json(events)},
-        original_job_id = ${jobId},
         updated_at = NOW() 
       WHERE id = ${id}
     `;
 
-    // 6. Mark Job Complete
-    await sql`UPDATE playlist_jobs SET status = 'complete', playlist_id = ${playlistId} WHERE id = ${jobId}`;
-
-    // 7. Return the new data
+    // 5. Return the new data
     return res.json({ 
       success: true, 
       playlistId, 
