@@ -162,3 +162,4 @@ server/utils/SPOTIFY_AUTH_GUIDE.md
 server/utils/getSpotifyTokens.js
 docs/EMAIL_FEATURE_PLAN.md
 docs/DOMAIN_MIGRATION.md
+docs/PLAYLIST_UPDATE_MODE_PLAN.md
