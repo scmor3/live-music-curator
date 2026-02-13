@@ -1331,15 +1331,8 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
     logger.warn(`${logPrefix} Failed to save initial events data: ${saveErr.message}`);
   }
 
-  // Log summary showing all artists (for users who don't know it's an update)
-  // We'll update with the correct total count after merging
-  if (oldArtistCount > 0 && newArtists.length > 0) {
-    await updateJobLog(jobId, `Updating playlist: ${oldArtistCount} already in playlist, adding ${newArtists.length} new artists...`, oldArtistCount, oldArtistCount + newArtists.length);
-  } else if (oldArtistCount > 0) {
-    await updateJobLog(jobId, `Found ${uniqueEvents.length} artists in ${city} on ${prettyDate} (all already in playlist)`, uniqueEvents.length, uniqueEvents.length);
-  } else {
-    await updateJobLog(jobId, `Found ${newArtists.length} new artists in ${city} on ${prettyDate}`, 0, newArtists.length);
-  }
+  // Don't set initial message yet - we'll set it after merge with correct total
+  // The old artist logs are already in log_history from when the update job was created
 
   // --- Genre Synonym Map (same as runCurationLogic) ---
   const genreSynonymMap = {
@@ -1644,35 +1637,43 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
     logger.warn(`${logPrefix} Failed to save merged events data: ${saveErr.message}`);
   }
 
-  // Update the initial log message with correct total count
-  // Replace the "Updating playlist" message with the actual final count
+  // Set the initial "Found X artists" message with correct total count after merge
+  // This message should be at the beginning of the log_history
+  // Note: prettyDate is already defined earlier in the function
   try {
     const currentLogs = await sql`
       SELECT log_history FROM playlist_jobs WHERE id = ${jobId}
     `;
     const logs = currentLogs[0]?.log_history || [];
-    // Find and replace the "Updating playlist" message with correct total
-    const updatedLogs = logs.map(log => {
-      if (log.includes('Updating playlist:') && log.includes('already in playlist')) {
-        return `Found ${finalTotalCount} total artists in ${city} on ${prettyDate} (${oldArtistCount} already in playlist, added ${newArtists.length} new)`;
-      }
-      return log;
-    });
+    
+    // Create the initial message with correct total
+    let initialMessage;
+    if (oldArtistCount > 0 && newArtists.length > 0) {
+      initialMessage = `Found ${finalTotalCount} total artists in ${city} on ${prettyDate} (${oldArtistCount} already in playlist, added ${newArtists.length} new)`;
+    } else if (oldArtistCount > 0) {
+      initialMessage = `Found ${finalTotalCount} artists in ${city} on ${prettyDate} (all already in playlist)`;
+    } else {
+      initialMessage = `Found ${finalTotalCount} artists in ${city} on ${prettyDate}`;
+    }
+    
+    // Remove any existing "Found X artists" or "Updating playlist" messages
+    const filteredLogs = logs.filter(log => 
+      !log.includes('Found ') && 
+      !log.includes('artists in') && 
+      !log.includes('Updating playlist')
+    );
+    
+    // Prepend the initial message to the beginning
+    const updatedLogs = [initialMessage, ...filteredLogs];
     
     await sql`
       UPDATE playlist_jobs 
       SET log_history = ${updatedLogs}
       WHERE id = ${jobId}
     `;
+    logger.info(`${logPrefix} Set initial message: "${initialMessage}" with correct total ${finalTotalCount}`);
   } catch (logUpdateErr) {
     logger.warn(`${logPrefix} Failed to update log message with correct total: ${logUpdateErr.message}`);
-  }
-
-  // Log final summary with total count (so users see all artists in playlist)
-  if (newArtists.length > 0) {
-    await updateJobLog(jobId, `Update complete. Added ${tracksAddedCount} tracks from ${newArtists.length} new artists. Playlist now has ${finalTotalCount} total artists.`, finalTotalCount, finalTotalCount);
-  } else {
-    await updateJobLog(jobId, `Playlist is up to date. ${finalTotalCount} artists in playlist.`, finalTotalCount, finalTotalCount);
   }
   logger.info(`${logPrefix} Update complete. Total tracks added: ${tracksAddedCount}. Merged ${oldEventsData?.length || 0} old events with ${uniqueEvents.length} new events. Final total: ${finalTotalCount} artists.`);
   
@@ -1853,38 +1854,19 @@ async function processJobQueue(workerId) {
       playlistId = result.playlistId;
       events = result.events;
       
-      // ALSO update the original job with merged events_data and log_history
-      // This ensures users querying the original job see the updated data and activity feed
+      // Update the original job's events_data for consistency (in case someone queries it directly)
+      // We don't update log_history since we're returning the update job ID to the user
       if (originalJobId) {
         try {
-          // Get the update job's log_history to append to original job
-          const updateJob = await sql`
-            SELECT log_history, total_artists
-            FROM playlist_jobs
-            WHERE id = ${job.id}
-          `;
-          
-          const updateLogs = updateJob[0]?.log_history || [];
-          // Filter to get only the new artist processing logs (ARTIST:, SKIPPED:, Update complete)
-          const newLogs = updateLogs.filter(log => 
-            log.startsWith('ARTIST:') || 
-            log.startsWith('SKIPPED:') ||
-            log.includes('Update complete')
-          );
-          
-          // Prepend an update message and append new logs to original job's log_history
-          const updateMessage = `Playlist updated: Now has ${events.length} total artists (added ${newLogs.filter(l => l.startsWith('ARTIST:')).length} new)`;
-          
           await sql`
             UPDATE playlist_jobs 
             SET
               events_data = ${sql.json(events)},
               total_artists = ${events.length},
-              log_history = array_cat(array[${updateMessage}], array_cat(log_history, ${newLogs})),
               updated_at = NOW()
             WHERE id = ${originalJobId};
           `;
-          logger.info(`${logPrefix} Updated original job ${originalJobId} with merged events_data (${events.length} total artists) and appended update message + ${newLogs.length} new log entries`);
+          logger.info(`${logPrefix} Updated original job ${originalJobId} with merged events_data (${events.length} total artists) for consistency`);
         } catch (updateErr) {
           logger.warn(`${logPrefix} Failed to update original job ${originalJobId}: ${updateErr.message}`);
         }
@@ -2410,8 +2392,34 @@ app.get('/api/playlists', async (req, res) => {
           
           const updateJobId = updateJob[0].id;
           logger.info(`Created update job ${updateJobId} for existing playlist ${job.playlist_id}. Original job: ${job.id}`);
-          // Return ORIGINAL job ID so user sees the same job they requested
-          return res.status(202).json({ jobId: job.id });
+          
+          // Copy original job's log_history to update job (excluding "Curation complete" message)
+          // This ensures the update job shows all artists in the feed
+          try {
+            const originalJob = await sql`
+              SELECT log_history FROM playlist_jobs WHERE id = ${job.id}
+            `;
+            const originalLogs = originalJob[0]?.log_history || [];
+            // Filter out "Curation complete" message, keep all artist logs
+            const oldArtistLogs = originalLogs.filter(log => 
+              !log.includes('Curation complete') && 
+              !log.includes('Found ') && 
+              !log.includes('artists in')
+            );
+            
+            // Initialize update job with old artist logs
+            await sql`
+              UPDATE playlist_jobs 
+              SET log_history = ${oldArtistLogs}
+              WHERE id = ${updateJobId}
+            `;
+            logger.info(`Copied ${oldArtistLogs.length} old artist logs to update job ${updateJobId}`);
+          } catch (logCopyErr) {
+            logger.warn(`Failed to copy original job's log_history to update job: ${logCopyErr.message}`);
+          }
+          
+          // Return UPDATE job ID so frontend waits for refresh to complete
+          return res.status(202).json({ jobId: updateJobId });
       } else {
           // Playlist is fresh, return existing job
           logger.info(`Cache HIT (Job): Found existing job ${job.id} with status: ${job.status}. ${refreshCheck.reason}`);
