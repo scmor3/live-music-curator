@@ -174,7 +174,11 @@ export default function LiveActivityFeed({
 
   // DIAGNOSTIC: Track logs.length changes
   useEffect(() => {
-    console.log(`[LOGS-LENGTH] Changed to ${logs.length} (displayedCount: ${displayedCount}, status: ${status})`);
+    // Force execution - use multiple methods to ensure it runs
+    const log = console.log;
+    const warn = console.warn;
+    log(`[LOGS-LENGTH] Changed to ${logs.length} (displayedCount: ${displayedCount}, status: ${status})`);
+    warn(`[LOGS-LENGTH-WARN] Same info via warn: ${logs.length}/${displayedCount}/${status}`);
   }, [logs.length, displayedCount, status]);
 
   // Reset when logs are cleared
@@ -199,9 +203,12 @@ export default function LiveActivityFeed({
     setVisibleLogs(newVisible);
     setIsQueueEmpty(displayedCount >= logs.length);
     
-    // DIAGNOSTIC: Log when visible logs change significantly
-    if (newVisible.length > 0 && (newVisible.length % 10 === 0 || displayedCount === logs.length)) {
-      console.log(`[VISIBLE] Displaying ${newVisible.length}/${logs.length} logs (displayedCount: ${displayedCount})`);
+    // DIAGNOSTIC: Log when visible logs change significantly (force execution)
+    const log = console.log;
+    const warn = console.warn;
+    if (newVisible.length > 0 && (newVisible.length % 5 === 0 || displayedCount === logs.length || newVisible.length <= 5)) {
+      log(`[VISIBLE] Displaying ${newVisible.length}/${logs.length} logs (displayedCount: ${displayedCount})`);
+      warn(`[VISIBLE-WARN] Same via warn: ${newVisible.length}/${logs.length}`);
     }
   }, [logs, displayedCount]);
 
@@ -221,9 +228,12 @@ export default function LiveActivityFeed({
         // Read logs.length fresh each time (logs prop is stable, length changes when needed)
         if (current < logs.length) {
           const next = current + 1;
-          // DIAGNOSTIC: Log every 10th increment to track progress
-          if (next % 10 === 0 || next === logs.length) {
-            console.log(`[DRIP] Incremented to ${next}/${logs.length} (status: ${status})`);
+          // DIAGNOSTIC: Log every increment to track progress (force execution)
+          const log = console.log;
+          const error = console.error;
+          if (next % 5 === 0 || next === logs.length || next <= 5) {
+            log(`[DRIP] Incremented to ${next}/${logs.length} (status: ${status})`);
+            error(`[DRIP-ERROR] Same via error: ${next}/${logs.length}`);
           }
           return next;
         }
@@ -325,8 +335,23 @@ export default function LiveActivityFeed({
     }
   };
 
+  // DEPLOYMENT VERIFICATION: This will show if new code is deployed
+  const DEPLOYMENT_VERSION = 'v2.1.0-debug';
+  useEffect(() => {
+    // Force console log execution - this MUST appear if code is deployed
+    const log = console.log;
+    log(`🚀 [DEPLOY-CHECK] LiveActivityFeed component loaded - Version: ${DEPLOYMENT_VERSION}`);
+    log(`🚀 [DEPLOY-CHECK] Timestamp: ${new Date().toISOString()}`);
+    log(`🚀 [DEPLOY-CHECK] Initial logs.length: ${logs.length}, displayedCount: ${displayedCount}`);
+  }, []);
+
   return (
     <div className="w-full max-w-lg bg-zinc-900 rounded-2xl shadow-2xl overflow-hidden border border-zinc-800 animate-in fade-in slide-in-from-bottom-4 duration-500 h-[75vh] flex flex-col">
+      
+      {/* DEPLOYMENT VERIFICATION BANNER - Remove after confirming deployment */}
+      <div className="bg-gradient-to-r from-pink-500 via-purple-500 to-blue-500 p-2 text-white text-center font-bold text-sm animate-pulse">
+        🚀 NEW CODE DEPLOYED - Version {DEPLOYMENT_VERSION} 🚀
+      </div>
       
       {/* --- HEADER --- */}
       <div className={`p-3 border-b border-zinc-800 transition-colors duration-700 ${
