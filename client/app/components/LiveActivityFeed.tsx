@@ -61,9 +61,8 @@ export default function LiveActivityFeed({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [visibleLogs, setVisibleLogs] = useState<string[]>([]);
   
-  // Queue Logic
-  const queueRef = useRef<string[]>([]);
-  const processedIndexRef = useRef(0);
+  // Track how many logs have been displayed (read directly from logs array)
+  const displayedCountRef = useRef(0);
   const [isQueueEmpty, setIsQueueEmpty] = useState(true);
 
   // HYPE CYCLE
@@ -173,62 +172,69 @@ export default function LiveActivityFeed({
     return () => clearInterval(interval);
   }, [visibleLogs.length, status]);
 
-  // 2. INGESTION (Modified for Instant Load)
+  // 2. INGESTION - Simplified: No queue rebuilding, just track what we've seen
   useEffect(() => {
     // Reset Logic
     if (logs.length === 0) {
       setVisibleLogs([]);
-      queueRef.current = [];
-      processedIndexRef.current = 0;
+      displayedCountRef.current = 0;
       return;
     }
 
-    // New Items Logic
-    if (logs.length > processedIndexRef.current) {
-      const newItems = logs.slice(processedIndexRef.current);
-      
-      // LOGIC BRANCH:
-      // If the job is ALREADY complete (Cache Hit), show everything immediately.
-      // Otherwise, add to the queue for the "drip" effect.
-      if (status === 'complete') {
-        setVisibleLogs((prev) => [...prev, ...newItems]);
-        queueRef.current = []; // Clear queue to be safe
-        setIsQueueEmpty(true);
-      } else {
-        queueRef.current.push(...newItems);
-        setIsQueueEmpty(false);
-      }
-      
-      processedIndexRef.current = logs.length;
+    // If job is complete, show all remaining logs immediately
+    if (status === 'complete' && displayedCountRef.current < logs.length) {
+      const remainingLogs = logs.slice(displayedCountRef.current);
+      setVisibleLogs((prev) => {
+        const newVisible = [...prev, ...remainingLogs];
+        displayedCountRef.current = newVisible.length;
+        return newVisible;
+      });
     }
   }, [logs, status]);
 
-  // 3. FLUSH ON COMPLETE (New)
-  // If the job finishes while we still have items in the queue (e.g. normal run finishing),
-  // dump them all instantly so the user doesn't have to wait.
-  useEffect(() => {
-    if (status === 'complete' && queueRef.current.length > 0) {
-      setVisibleLogs((prev) => [...prev, ...queueRef.current]);
-      queueRef.current = [];
-      setIsQueueEmpty(true);
-    }
-  }, [status]);
+  // 3. FLUSH ON COMPLETE - Handled in INGESTION effect above
 
-  // 4. THE DRIP
+  // 4. THE DRIP - Read directly from logs array instead of using a queue
   useEffect(() => {
+    if (status === 'complete') {
+      // If complete, don't drip - everything is shown immediately
+      return;
+    }
+
+    let dripCount = 0;
     const interval = setInterval(() => {
-      if (queueRef.current.length > 0) {
-        const nextLog = queueRef.current.shift();
+      // Read directly from logs array using displayedCountRef
+      // This eliminates race conditions and queue rebuilding issues
+      const nextIndex = displayedCountRef.current;
+      
+      if (nextIndex < logs.length) {
+        const nextLog = logs[nextIndex];
         if (nextLog) {
-          setVisibleLogs((prev) => [...prev, nextLog]);
+          dripCount++;
+          setVisibleLogs((prev) => {
+            const newVisible = [...prev, nextLog];
+            displayedCountRef.current = newVisible.length;
+            
+            // DIAGNOSTIC: Log every log to track what's being displayed
+            const logPreview = nextLog.substring(0, 50);
+            const remaining = logs.length - newVisible.length;
+            console.log(`[DRIP] Processing log ${dripCount} (index ${nextIndex}, visible: ${newVisible.length}, remaining: ${remaining}): ${logPreview}...`);
+            
+            // Also log every 10th log for summary
+            if (newVisible.length % 10 === 0) {
+              console.log(`[DRIP] Processed ${newVisible.length} logs. Remaining: ${remaining}`);
+            }
+            return newVisible;
+          });
         }
       } else {
+        // No more logs to display
         setIsQueueEmpty(true);
       }
     }, 400); 
 
     return () => clearInterval(interval);
-  }, []);
+  }, [logs, status]);
 
   // 5. SMART AUTO-SCROLL
   useEffect(() => {
