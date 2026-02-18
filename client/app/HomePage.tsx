@@ -277,31 +277,40 @@ export default function HomePage() {
       }
       // -----------------
 
-      // DIAGNOSTIC: Track polling and log contents
+      // DIAGNOSTIC: Track polling and log contents (always log, even in production)
       pollCountRef.current += 1;
       const pollCount = pollCountRef.current;
       const timestamp = new Date().toISOString();
       
+      // Force console.log to always execute (prevent minification/removal)
+      const logPoll = console.log.bind(console);
+      
       if (data.logs && data.logs.length > 0) {
-        console.log(`[POLL] Poll #${pollCount} at ${timestamp}`);
-        console.log(`[POLL] Received ${data.logs.length} total logs from API`);
-        console.log(`[POLL] Logs range: indices 0 to ${data.logs.length - 1}`);
+        logPoll(`[POLL] Poll #${pollCount} at ${timestamp}`);
+        logPoll(`[POLL] Received ${data.logs.length} total logs from API`);
+        logPoll(`[POLL] Logs range: indices 0 to ${data.logs.length - 1}`);
+        logPoll(`[POLL] Status: ${data.status}, Progress: ${data.progress?.current || 0}/${data.progress?.total || 0}`);
         
         // Sample specific log indices to track gaps
-        const sampleIndices = [0, 49, 50, 94, 95, 104, 105, data.logs.length - 1];
+        const sampleIndices = [0, Math.floor(data.logs.length * 0.25), Math.floor(data.logs.length * 0.5), Math.floor(data.logs.length * 0.75), data.logs.length - 1];
         const samples: Record<number, string> = {};
         sampleIndices.forEach(idx => {
           if (data.logs[idx]) {
             samples[idx] = data.logs[idx].substring(0, 60);
           }
         });
-        console.log(`[POLL] Sample logs at key indices:`, samples);
+        logPoll(`[POLL] Sample logs at key indices:`, samples);
         
         // Check for gaps in ARTIST: logs
         const artistLogs = data.logs.filter((log: string) => log.startsWith('ARTIST:'));
-        console.log(`[POLL] Found ${artistLogs.length} ARTIST: logs in this response`);
+        logPoll(`[POLL] Found ${artistLogs.length} ARTIST: logs in this response`);
+        
+        // Check for "Found X artists" and "Curation complete" messages
+        const foundMsg = data.logs.find((log: string) => log.includes('Found') && log.includes('artists'));
+        const completeMsg = data.logs.find((log: string) => log.includes('Curation complete'));
+        logPoll(`[POLL] Found message: ${foundMsg ? 'YES' : 'NO'}, Complete message: ${completeMsg ? 'YES' : 'NO'}`);
       } else {
-        console.log(`[POLL] Poll #${pollCount} at ${timestamp} - No logs received`);
+        logPoll(`[POLL] Poll #${pollCount} at ${timestamp} - No logs received`);
       }
 
       // Always update logs and progress if they exist

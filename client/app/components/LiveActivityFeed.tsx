@@ -172,6 +172,11 @@ export default function LiveActivityFeed({
     return () => clearInterval(interval);
   }, [visibleLogs.length, status]);
 
+  // DIAGNOSTIC: Track logs.length changes
+  useEffect(() => {
+    console.log(`[LOGS-LENGTH] Changed to ${logs.length} (displayedCount: ${displayedCount}, status: ${status})`);
+  }, [logs.length, displayedCount, status]);
+
   // Reset when logs are cleared
   useEffect(() => {
     if (logs.length === 0) {
@@ -190,8 +195,14 @@ export default function LiveActivityFeed({
 
   // Always display logs.slice(0, displayedCount) - single source of truth
   useEffect(() => {
-    setVisibleLogs(logs.slice(0, displayedCount));
+    const newVisible = logs.slice(0, displayedCount);
+    setVisibleLogs(newVisible);
     setIsQueueEmpty(displayedCount >= logs.length);
+    
+    // DIAGNOSTIC: Log when visible logs change significantly
+    if (newVisible.length > 0 && (newVisible.length % 10 === 0 || displayedCount === logs.length)) {
+      console.log(`[VISIBLE] Displaying ${newVisible.length}/${logs.length} logs (displayedCount: ${displayedCount})`);
+    }
   }, [logs, displayedCount]);
 
   // THE DRIP - Increment displayedCount over time
@@ -201,19 +212,27 @@ export default function LiveActivityFeed({
       return;
     }
 
+    // CRITICAL: Use logs.length in dependency, not logs array itself
+    // This prevents effect restart on every poll (which creates new array reference)
+    const targetLength = logs.length;
+    
     const interval = setInterval(() => {
       setDisplayedCount((current) => {
-        // Read from the current logs prop (logs is in dependency array, so this is fresh)
-        const targetLength = logs.length;
-        if (current < targetLength) {
-          return current + 1;
+        // Read logs.length fresh each time (logs prop is stable, length changes when needed)
+        if (current < logs.length) {
+          const next = current + 1;
+          // DIAGNOSTIC: Log every 10th increment to track progress
+          if (next % 10 === 0 || next === logs.length) {
+            console.log(`[DRIP] Incremented to ${next}/${logs.length} (status: ${status})`);
+          }
+          return next;
         }
         return current;
       });
     }, 400); 
 
     return () => clearInterval(interval);
-  }, [status, logs]); // Include logs so we always have the latest length
+  }, [status, logs.length]); // Only restart when length changes, not on every array reference change
 
   // 5. SMART AUTO-SCROLL
   useEffect(() => {
