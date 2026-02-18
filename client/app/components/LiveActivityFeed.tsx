@@ -63,6 +63,7 @@ export default function LiveActivityFeed({
   
   // Track how many logs have been displayed (read directly from logs array)
   const displayedCountRef = useRef(0);
+  const logsRef = useRef<string[]>([]); // Keep a ref to the latest logs array
   const [isQueueEmpty, setIsQueueEmpty] = useState(true);
 
   // HYPE CYCLE
@@ -174,6 +175,9 @@ export default function LiveActivityFeed({
 
   // 2. INGESTION - Simplified: No queue rebuilding, just track what we've seen
   useEffect(() => {
+    // Always update the logs ref to the latest logs array
+    logsRef.current = logs;
+    
     // Reset Logic
     if (logs.length === 0) {
       setVisibleLogs([]);
@@ -203,12 +207,15 @@ export default function LiveActivityFeed({
 
     let dripCount = 0;
     const interval = setInterval(() => {
-      // Read directly from logs array using displayedCountRef
-      // This eliminates race conditions and queue rebuilding issues
+      // CRITICAL FIX: Read from logsRef.current instead of logs prop
+      // This ensures we always read the latest logs array, even if the effect
+      // was created with an older version. The logsRef is updated in the INGESTION
+      // effect whenever logs prop changes.
+      const currentLogs = logsRef.current;
       const nextIndex = displayedCountRef.current;
       
-      if (nextIndex < logs.length) {
-        const nextLog = logs[nextIndex];
+      if (nextIndex < currentLogs.length) {
+        const nextLog = currentLogs[nextIndex];
         if (nextLog) {
           dripCount++;
           setVisibleLogs((prev) => {
@@ -217,7 +224,7 @@ export default function LiveActivityFeed({
             
             // DIAGNOSTIC: Log every log to track what's being displayed
             const logPreview = nextLog.substring(0, 50);
-            const remaining = logs.length - newVisible.length;
+            const remaining = currentLogs.length - newVisible.length;
             console.log(`[DRIP] Processing log ${dripCount} (index ${nextIndex}, visible: ${newVisible.length}, remaining: ${remaining}): ${logPreview}...`);
             
             // Also log every 10th log for summary
@@ -234,7 +241,7 @@ export default function LiveActivityFeed({
     }, 400); 
 
     return () => clearInterval(interval);
-  }, [logs, status]);
+  }, [status]); // Removed logs from dependencies - we use logsRef instead
 
   // 5. SMART AUTO-SCROLL
   useEffect(() => {
