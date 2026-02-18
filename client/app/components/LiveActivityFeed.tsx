@@ -61,9 +61,8 @@ export default function LiveActivityFeed({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [visibleLogs, setVisibleLogs] = useState<string[]>([]);
   
-  // Track how many logs have been displayed (read directly from logs array)
-  const displayedCountRef = useRef(0);
-  const logsRef = useRef<string[]>([]); // Keep a ref to the latest logs array
+  // Track how many logs should be displayed (simple counter)
+  const [displayedCount, setDisplayedCount] = useState(0);
   const [isQueueEmpty, setIsQueueEmpty] = useState(true);
 
   // HYPE CYCLE
@@ -173,75 +172,48 @@ export default function LiveActivityFeed({
     return () => clearInterval(interval);
   }, [visibleLogs.length, status]);
 
-  // 2. INGESTION - Simplified: No queue rebuilding, just track what we've seen
+  // Reset when logs are cleared
   useEffect(() => {
-    // Always update the logs ref to the latest logs array
-    logsRef.current = logs;
-    
-    // Reset Logic
     if (logs.length === 0) {
       setVisibleLogs([]);
-      displayedCountRef.current = 0;
-      return;
+      setDisplayedCount(0);
+      setIsQueueEmpty(true);
     }
+  }, [logs.length]);
 
-    // If job is complete, show all remaining logs immediately
-    if (status === 'complete' && displayedCountRef.current < logs.length) {
-      const remainingLogs = logs.slice(displayedCountRef.current);
-      setVisibleLogs((prev) => {
-        const newVisible = [...prev, ...remainingLogs];
-        displayedCountRef.current = newVisible.length;
-        return newVisible;
-      });
+  // If job is complete, show all remaining logs immediately
+  useEffect(() => {
+    if (status === 'complete' && displayedCount < logs.length) {
+      setDisplayedCount(logs.length);
     }
-  }, [logs, status]);
+  }, [status, logs.length, displayedCount]);
 
-  // 3. FLUSH ON COMPLETE - Handled in INGESTION effect above
+  // Always display logs.slice(0, displayedCount) - single source of truth
+  useEffect(() => {
+    setVisibleLogs(logs.slice(0, displayedCount));
+    setIsQueueEmpty(displayedCount >= logs.length);
+  }, [logs, displayedCount]);
 
-  // 4. THE DRIP - Read directly from logs array instead of using a queue
+  // THE DRIP - Increment displayedCount over time
   useEffect(() => {
     if (status === 'complete') {
-      // If complete, don't drip - everything is shown immediately
+      // If complete, don't drip - everything is shown immediately via the effect above
       return;
     }
 
-    let dripCount = 0;
     const interval = setInterval(() => {
-      // CRITICAL FIX: Read from logsRef.current instead of logs prop
-      // This ensures we always read the latest logs array, even if the effect
-      // was created with an older version. The logsRef is updated in the INGESTION
-      // effect whenever logs prop changes.
-      const currentLogs = logsRef.current;
-      const nextIndex = displayedCountRef.current;
-      
-      if (nextIndex < currentLogs.length) {
-        const nextLog = currentLogs[nextIndex];
-        if (nextLog) {
-          dripCount++;
-          setVisibleLogs((prev) => {
-            const newVisible = [...prev, nextLog];
-            displayedCountRef.current = newVisible.length;
-            
-            // DIAGNOSTIC: Log every log to track what's being displayed
-            const logPreview = nextLog.substring(0, 50);
-            const remaining = currentLogs.length - newVisible.length;
-            console.log(`[DRIP] Processing log ${dripCount} (index ${nextIndex}, visible: ${newVisible.length}, remaining: ${remaining}): ${logPreview}...`);
-            
-            // Also log every 10th log for summary
-            if (newVisible.length % 10 === 0) {
-              console.log(`[DRIP] Processed ${newVisible.length} logs. Remaining: ${remaining}`);
-            }
-            return newVisible;
-          });
+      setDisplayedCount((current) => {
+        // Read from the current logs prop (logs is in dependency array, so this is fresh)
+        const targetLength = logs.length;
+        if (current < targetLength) {
+          return current + 1;
         }
-      } else {
-        // No more logs to display
-        setIsQueueEmpty(true);
-      }
+        return current;
+      });
     }, 400); 
 
     return () => clearInterval(interval);
-  }, [status]); // Removed logs from dependencies - we use logsRef instead
+  }, [status, logs]); // Include logs so we always have the latest length
 
   // 5. SMART AUTO-SCROLL
   useEffect(() => {
