@@ -1,7 +1,7 @@
 "use client";
 
 // Import 'useState' from React
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { text } from 'stream/consumers';
 import LiveActivityFeed from './components/LiveActivityFeed';
 import { createClient } from '@supabase/supabase-js';
@@ -147,6 +147,9 @@ export default function HomePage() {
 
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  
+  // Track poll count for debugging
+  const pollCountRef = useRef(0);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   
   const [events, setEvents] = useState<any[]>([]);
@@ -273,6 +276,33 @@ export default function HomePage() {
          console.log(`Frontend received ${data.events.length} events! First:`, data.events[0]);
       }
       // -----------------
+
+      // DIAGNOSTIC: Track polling and log contents
+      pollCountRef.current += 1;
+      const pollCount = pollCountRef.current;
+      const timestamp = new Date().toISOString();
+      
+      if (data.logs && data.logs.length > 0) {
+        console.log(`[POLL] Poll #${pollCount} at ${timestamp}`);
+        console.log(`[POLL] Received ${data.logs.length} total logs from API`);
+        console.log(`[POLL] Logs range: indices 0 to ${data.logs.length - 1}`);
+        
+        // Sample specific log indices to track gaps
+        const sampleIndices = [0, 49, 50, 94, 95, 104, 105, data.logs.length - 1];
+        const samples: Record<number, string> = {};
+        sampleIndices.forEach(idx => {
+          if (data.logs[idx]) {
+            samples[idx] = data.logs[idx].substring(0, 60);
+          }
+        });
+        console.log(`[POLL] Sample logs at key indices:`, samples);
+        
+        // Check for gaps in ARTIST: logs
+        const artistLogs = data.logs.filter((log: string) => log.startsWith('ARTIST:'));
+        console.log(`[POLL] Found ${artistLogs.length} ARTIST: logs in this response`);
+      } else {
+        console.log(`[POLL] Poll #${pollCount} at ${timestamp} - No logs received`);
+      }
 
       // Always update logs and progress if they exist
       if (data.logs) setLogs(data.logs);
@@ -465,6 +495,7 @@ export default function HomePage() {
 
       if (data.jobId) {
         // SUCCESS! We got a job ID
+        pollCountRef.current = 0; // Reset poll counter for new job
         setJobId(data.jobId); // This is the key. We save the job ID.
         setPollingStatusMessage('Your job is in the queue...');
       } else {
@@ -498,6 +529,7 @@ export default function HomePage() {
     setError('');
     setEvents([]);
     setIsLoading(false);
+    pollCountRef.current = 0; // Reset poll counter
     // We don't clear the form inputs (city/date) so they can easily tweak them!
   };
 

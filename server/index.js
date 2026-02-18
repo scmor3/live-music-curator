@@ -1419,6 +1419,12 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
     }
   };
 
+  // Batch artist logs (both existing and new) to avoid many individual database calls
+  // This ensures chronological order and eliminates race conditions
+  // We batch ALL artist logs together to maintain proper order in the database
+  const existingArtistLogs = []; // Note: name kept for compatibility, but now holds both existing and new artist logs
+  let lastExistingArtistIndex = -1;
+  
   // --- Loop over ALL artists in chronological order ---
   for (let i = 0; i < uniqueEvents.length; i++) {
     const eventObj = uniqueEvents[i];
@@ -1435,11 +1441,78 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
     }
     
     if (isNewArtist) {
+      // If we have batched artist logs (existing or new), flush them before processing this new artist
+      // This ensures chronological order in the feed
+      if (existingArtistLogs.length > 0) {
+        try {
+          // Batch append all artist logs at once using array_cat
+          await sql`
+            UPDATE playlist_jobs
+            SET 
+              log_history = array_cat(log_history, ${sql.array(existingArtistLogs)}),
+              processed_artists = ${processedCount - 1},
+              total_artists = ${totalArtistCount},
+              updated_at = NOW()
+            WHERE id = ${jobId};
+          `;
+          const timestamp = new Date().toISOString();
+          logger.info(`[BATCH-FLUSH] ${timestamp} - ${logPrefix} Flushed batch of ${existingArtistLogs.length} artist logs (artists ${lastExistingArtistIndex - existingArtistLogs.length + 2} to ${lastExistingArtistIndex + 1}) before processing new artist "${artistName}"`);
+          existingArtistLogs.length = 0; // Clear the batch
+          
+          // Verify the flush succeeded by checking log count
+          try {
+            const verifyFlush = await sql`SELECT log_history FROM playlist_jobs WHERE id = ${jobId}`;
+            const currentLogCount = verifyFlush[0]?.log_history?.length || 0;
+            logger.debug(`[BATCH-FLUSH] ${timestamp} - ${logPrefix} Batch flush verified: ${currentLogCount} total logs in database`);
+          } catch (verifyErr) {
+            logger.warn(`[BATCH-FLUSH] ${timestamp} - ${logPrefix} Could not verify batch flush: ${verifyErr.message}`);
+          }
+        } catch (batchLogErr) {
+          logger.warn(`${logPrefix} Failed to batch artist logs: ${batchLogErr.message}`);
+          // Fallback: log individually if batch fails
+          for (const logMsg of existingArtistLogs) {
+            await updateJobLog(jobId, logMsg, processedCount - existingArtistLogs.length + existingArtistLogs.indexOf(logMsg) + 1, totalArtistCount);
+          }
+          existingArtistLogs.length = 0;
+        }
+      }
+      
       logger.info(`${logPrefix} [${i + 1}/${uniqueEvents.length}] Processing NEW artist: "${artistName}"`);
     } else {
       logger.info(`${logPrefix} [${i + 1}/${uniqueEvents.length}] Processing existing artist: "${artistName}" (skipping Spotify API)`);
-      // Fast drip for old artists - just log immediately
-      await updateJobLog(jobId, `ARTIST:${artistName}`, processedCount, totalArtistCount);
+      // Batch existing artist logs, but flush more frequently to ensure frontend receives them
+      // Flush every 10 artists or when we hit a new artist (whichever comes first)
+      existingArtistLogs.push(`ARTIST:${artistName}`);
+      lastExistingArtistIndex = i;
+      
+      // Flush batch if it gets too large (every 10 artists) to ensure logs are available to frontend
+      // This applies to both existing and new artists that are batched
+      if (existingArtistLogs.length >= 10) {
+        try {
+          await sql`
+            UPDATE playlist_jobs
+            SET 
+              log_history = array_cat(log_history, ${sql.array(existingArtistLogs)}),
+              processed_artists = ${processedCount},
+              total_artists = ${totalArtistCount},
+              updated_at = NOW()
+            WHERE id = ${jobId};
+          `;
+          const timestamp = new Date().toISOString();
+          logger.info(`[BATCH-FLUSH] ${timestamp} - ${logPrefix} Flushed batch of ${existingArtistLogs.length} artist logs (artists ${lastExistingArtistIndex - existingArtistLogs.length + 2} to ${lastExistingArtistIndex + 1}) - batch size limit reached`);
+          existingArtistLogs.length = 0; // Clear the batch
+        } catch (batchLogErr) {
+          logger.warn(`${logPrefix} Failed to batch artist logs: ${batchLogErr.message}`);
+          // Fallback: log individually if batch fails
+          for (const logMsg of existingArtistLogs) {
+            await updateJobLog(jobId, logMsg, processedCount - existingArtistLogs.length + existingArtistLogs.indexOf(logMsg) + 1, totalArtistCount);
+          }
+          existingArtistLogs.length = 0;
+        }
+      } else {
+        // Log when we add to batch (for debugging)
+        logger.debug(`${logPrefix} Batched ${existingArtistLogs.length} artist logs (artists ${lastExistingArtistIndex - existingArtistLogs.length + 2} to ${lastExistingArtistIndex + 1}) - waiting for flush`);
+      }
       continue;
     }
     
@@ -1460,7 +1533,9 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
       const potentialMatches = searchResponse.data.artists.items;
       if (potentialMatches.length === 0) {
         logger.info(`${logPrefix}   -> No Spotify results for "${artistName}".`);
-        await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, processedCount, totalArtistCount);
+        // Batch the SKIPPED log instead of writing immediately
+        existingArtistLogs.push(`SKIPPED:${artistName} (Not found)`);
+        lastExistingArtistIndex = i;
         continue;
       }
 
@@ -1496,7 +1571,9 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
           logger.info(`${logPrefix}   -> Found Fuzzy Match: "${bestMatch.name}" (ID: ${spotifyArtistId}, Dist: ${minDistance}) & genres: ${bestMatch.genres.join(', ')}`);
         } else {
           logger.warn(`${logPrefix} No close match for "${artistName}". Skipping.`);
-          await updateJobLog(jobId, `SKIPPED:${artistName} (Not found)`, processedCount, totalArtistCount);
+          // Batch the SKIPPED log instead of writing immediately
+          existingArtistLogs.push(`SKIPPED:${artistName} (Not found)`);
+          lastExistingArtistIndex = i;
           continue;
         }
       }
@@ -1511,7 +1588,9 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
 
         if (hasExcludedGenre) {
           logger.info(`${logPrefix}   -> SKIPPING: Artist "${bestMatch.name}" has an excluded genre. (${bestMatch.genres.join(', ')})`);
-          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (Genre: ${bestMatch.genres[0]})`, processedCount, totalArtistCount);
+          // Batch the SKIPPED log instead of writing immediately
+          existingArtistLogs.push(`SKIPPED:${bestMatch.name} (Genre: ${bestMatch.genres[0]})`);
+          lastExistingArtistIndex = i;
           spotifyArtistId = null;
         }
       }
@@ -1519,7 +1598,9 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
       if (spotifyArtistId) {
         if (processedArtistIds.has(spotifyArtistId)) {
           logger.info(`${logPrefix} Already processed artist ID ${spotifyArtistId} (from a duplicate). Skipping track add.`);
-          await updateJobLog(jobId, `ARTIST:${artistName}`, processedCount, totalArtistCount);
+          // Batch the ARTIST log instead of writing immediately
+          existingArtistLogs.push(`ARTIST:${artistName}`);
+          lastExistingArtistIndex = i;
           continue;
         }
         
@@ -1537,7 +1618,9 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
         if (trackUris.length > 0) {
           const logName = artistName;
           
-          await updateJobLog(jobId, `ARTIST:${logName}`, processedCount, totalArtistCount);
+          // Batch the ARTIST log instead of writing immediately
+          existingArtistLogs.push(`ARTIST:${logName}`);
+          lastExistingArtistIndex = i;
           logger.info(`${logPrefix}   -> Found ${trackUris.length} tracks for "${logName}". Adding to batch...`);
 
           trackBatch.push(...trackUris);
@@ -1550,7 +1633,9 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
           }
         } else {
           logger.info(`${logPrefix}   -> Found artist, but they have no top tracks. Skipping track add.`);
-          await updateJobLog(jobId, `SKIPPED:${bestMatch.name} (No tracks)`, processedCount, totalArtistCount);
+          // Batch the SKIPPED log instead of writing immediately
+          existingArtistLogs.push(`SKIPPED:${bestMatch.name} (No tracks)`);
+          lastExistingArtistIndex = i;
           processedArtistIds.add(spotifyArtistId);
         }
       }
@@ -1592,11 +1677,15 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
           logger.info(`${logPrefix} Retrying artist "${artistName}"...`);
         } else {
           logger.error(`${logPrefix} Artist "${artistName}" failed after ${MAX_RETRIES} retries. Skipping.`);
-          await updateJobLog(jobId, `SKIPPED:${artistName} (Error)`, processedCount, totalArtistCount);
+          // Batch the SKIPPED log instead of writing immediately
+          existingArtistLogs.push(`SKIPPED:${artistName} (Error)`);
+          lastExistingArtistIndex = i;
         }
       } else {
         logger.error(`${logPrefix} Error processing artist "${artistName}":`, error.message);
-        await updateJobLog(jobId, `SKIPPED:${artistName} (Error)`, processedCount, totalArtistCount);
+        // Batch the SKIPPED log instead of writing immediately
+        existingArtistLogs.push(`SKIPPED:${artistName} (Error)`);
+        lastExistingArtistIndex = i;
       }
     }
   }
@@ -1612,6 +1701,32 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
   const finalMergedEvents = uniqueEvents;
   const finalTotalCount = finalMergedEvents.length;
 
+  // Flush any remaining artist logs (both existing and new) at the end of processing
+  // This ensures all logs are written to the database in chronological order
+  if (existingArtistLogs.length > 0) {
+    try {
+      await sql`
+        UPDATE playlist_jobs
+        SET 
+          log_history = array_cat(log_history, ${sql.array(existingArtistLogs)}),
+          processed_artists = ${processedCount},
+          total_artists = ${totalArtistCount},
+          updated_at = NOW()
+        WHERE id = ${jobId};
+      `;
+      const timestamp = new Date().toISOString();
+      logger.info(`[BATCH-FLUSH] ${timestamp} - ${logPrefix} Flushed final batch of ${existingArtistLogs.length} artist logs`);
+      existingArtistLogs.length = 0;
+    } catch (batchLogErr) {
+      logger.warn(`${logPrefix} Failed to flush final artist logs: ${batchLogErr.message}`);
+      // Fallback: log individually if batch fails
+      for (const logMsg of existingArtistLogs) {
+        await updateJobLog(jobId, logMsg, processedCount - existingArtistLogs.length + existingArtistLogs.indexOf(logMsg) + 1, totalArtistCount);
+      }
+      existingArtistLogs.length = 0;
+    }
+  }
+
   // Update job with final events and correct counts
   try {
     await sql`
@@ -1625,6 +1740,71 @@ async function updateExistingPlaylist(jobId, existingPlaylistId, city, date, num
 
   // Add "Curation complete" message at the end (standard message, same as new playlists)
   await updateJobLog(jobId, `Curation complete for ${city} on ${prettyDate}`, processedCount, totalArtistCount);
+  
+  // CRITICAL: Verify all logs were written AND match events BEFORE returning
+  // This ensures frontend receives all logs and can display all artists
+  try {
+    const verifyData = await sql`
+      SELECT log_history, events_data, processed_artists, total_artists FROM playlist_jobs WHERE id = ${jobId}
+    `;
+    const logHistory = verifyData[0]?.log_history || [];
+    const eventsData = verifyData[0]?.events_data || [];
+    const actualLogCount = logHistory.length;
+    
+    // Expected: 1 "Found X artists" + processedCount "ARTIST:" entries + 1 "Curation complete" = processedCount + 2
+    const expectedLogCount = processedCount + 2;
+    
+    // Count ARTIST: logs (these are what show up in the feed)
+    const artistLogs = logHistory.filter(log => typeof log === 'string' && log.startsWith('ARTIST:'));
+    const artistLogCount = artistLogs.length;
+    const eventsCount = eventsData.length;
+    
+    // Extract artist names from logs
+    const loggedArtistNames = new Set(
+      artistLogs.map(log => log.replace('ARTIST:', '').trim().toLowerCase())
+    );
+    
+    // Extract artist names from events
+    const eventArtistNames = new Set(
+      eventsData.map(event => (event.name || '').trim().toLowerCase())
+    );
+    
+    // Find missing artists (in events but not in logs)
+    const missingInLogs = eventsData.filter(event => {
+      const eventName = (event.name || '').trim().toLowerCase();
+      return !loggedArtistNames.has(eventName);
+    });
+    
+    // Find extra artists (in logs but not in events - shouldn't happen but good to check)
+    const extraInLogs = artistLogs.filter(log => {
+      const logName = log.replace('ARTIST:', '').trim().toLowerCase();
+      return !eventArtistNames.has(logName);
+    });
+    
+    // Report findings
+    if (actualLogCount < expectedLogCount) {
+      logger.error(`${logPrefix} CRITICAL: Log count mismatch! Expected ${expectedLogCount} total logs, but found ${actualLogCount}. Missing ${expectedLogCount - actualLogCount} logs.`);
+    }
+    
+    if (artistLogCount !== eventsCount) {
+      logger.error(`${logPrefix} CRITICAL: Artist count mismatch! Found ${artistLogCount} ARTIST: logs but ${eventsCount} events. Missing ${eventsCount - artistLogCount} artists in feed.`);
+      if (missingInLogs.length > 0) {
+        const missingNames = missingInLogs.slice(0, 5).map(e => e.name).join(', ');
+        logger.error(`${logPrefix} Missing artists in logs: ${missingNames}${missingInLogs.length > 5 ? ` and ${missingInLogs.length - 5} more` : ''}`);
+      }
+    }
+    
+    if (extraInLogs.length > 0) {
+      logger.warn(`${logPrefix} Found ${extraInLogs.length} ARTIST: logs without matching events (shouldn't happen)`);
+    }
+    
+    if (artistLogCount === eventsCount && actualLogCount >= expectedLogCount) {
+      logger.debug(`${logPrefix} Verification passed: ${artistLogCount} artists logged, ${eventsCount} events, ${actualLogCount} total logs ✓`);
+    }
+  } catch (verifyErr) {
+    logger.error(`${logPrefix} CRITICAL: Failed to verify logs/events: ${verifyErr.message}. Cannot confirm all artists will appear in feed.`);
+    // Continue anyway - better to complete the job than hang
+  }
   
   logger.info(`${logPrefix} Update complete. Total tracks added: ${tracksAddedCount}. Processed ${processedCount} artists (${newArtists.length} new, ${oldArtistCount} existing). Final total: ${finalTotalCount} artists.`);
   
