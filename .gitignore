@@ -162,3 +162,13 @@ server/utils/SPOTIFY_AUTH_GUIDE.md
 server/utils/getSpotifyTokens.js
 docs/EMAIL_FEATURE_PLAN.md
 docs/DOMAIN_MIGRATION.md
+docs/PLAYLIST_UPDATE_MODE_PLAN.md
+INTERVIEW_PREP.md
+INTERVIEW_CHEAT_SHEET.md
+CV_SECTION.md
+
+schema.sql
+migrations_data.sql
+
+# Database backups
+server/db-backups/

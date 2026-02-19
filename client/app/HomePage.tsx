@@ -1,7 +1,7 @@
 "use client";
 
 // Import 'useState' from React
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { text } from 'stream/consumers';
 import LiveActivityFeed from './components/LiveActivityFeed';
 import { createClient } from '@supabase/supabase-js';
@@ -147,6 +147,9 @@ export default function HomePage() {
 
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  
+  // Track poll count for debugging
+  const pollCountRef = useRef(0);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   
   const [events, setEvents] = useState<any[]>([]);
@@ -273,6 +276,17 @@ export default function HomePage() {
          console.log(`Frontend received ${data.events.length} events! First:`, data.events[0]);
       }
       // -----------------
+
+      // DIAGNOSTIC: Track polling and log contents
+      pollCountRef.current += 1;
+      const pollCount = pollCountRef.current;
+      
+      if (data.logs && data.logs.length > 0) {
+        // Only log every 5th poll to reduce console noise
+        if (pollCount % 5 === 0 || pollCount === 1) {
+          console.log(`[POLL] Poll #${pollCount} - Received ${data.logs.length} logs, Status: ${data.status}, Progress: ${data.progress?.current || 0}/${data.progress?.total || 0}`);
+        }
+      }
 
       // Always update logs and progress if they exist
       if (data.logs) setLogs(data.logs);
@@ -465,6 +479,7 @@ export default function HomePage() {
 
       if (data.jobId) {
         // SUCCESS! We got a job ID
+        pollCountRef.current = 0; // Reset poll counter for new job
         setJobId(data.jobId); // This is the key. We save the job ID.
         setPollingStatusMessage('Your job is in the queue...');
       } else {
@@ -498,6 +513,7 @@ export default function HomePage() {
     setError('');
     setEvents([]);
     setIsLoading(false);
+    pollCountRef.current = 0; // Reset poll counter
     // We don't clear the form inputs (city/date) so they can easily tweak them!
   };
 
