@@ -10,6 +10,7 @@ import {
   FolderIcon
 } from '@heroicons/react/24/outline';
 import PlaylistSidebar from './components/PlaylistSidebar';
+import FeedbackButton from './components/FeedbackButton';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -563,13 +564,16 @@ export default function HomePage() {
           Donate
         </a>
         
+        {/* Feedback Button - Always visible */}
+        <FeedbackButton userEmail={user?.email} />
+        
         {/* Auth Button */}
         {user && user.is_anonymous ? (
           <button 
             onClick={() => setIsAuthModalOpen(true)}
             className="px-4 py-2 bg-zinc-800 text-stone-100 text-sm font-semibold rounded-full hover:bg-zinc-700 shadow-md transition-all"
           >
-            Log In / Sign Up
+            Log In
           </button>
         ) : user ? (
           <div className="flex items-center gap-3 animate-in fade-in">
