@@ -215,6 +215,139 @@ async function sendPlaylistEmail({
   }
 }
 
+/**
+ * Send feedback notification email to support
+ * @param {Object} params - Feedback parameters
+ * @param {string} params.feedbackType - Type of feedback: 'bug', 'feature', 'design', 'general', or null
+ * @param {string} params.message - The feedback message
+ * @param {string} params.userEmail - User's email (optional)
+ * @param {string} params.userId - User ID if logged in (optional)
+ * @param {string} params.userAgent - Browser/device info
+ * @param {string} params.pageUrl - URL where feedback was submitted
+ * @returns {Promise<{success: boolean, error?: string, messageId?: string}>}
+ */
+async function sendFeedbackEmail({
+  feedbackType,
+  message,
+  userEmail,
+  userId,
+  userAgent,
+  pageUrl
+}) {
+  if (!resend) {
+    return {
+      success: false,
+      error: 'Email service not configured. RESEND_API_KEY is missing.'
+    };
+  }
+
+  if (!message) {
+    return {
+      success: false,
+      error: 'Feedback message is required'
+    };
+  }
+
+  try {
+    // Rate limiting: Ensure we don't exceed 2 requests per second
+    const now = Date.now();
+    const timeSinceLastSend = now - lastEmailSendTime;
+    if (timeSinceLastSend < MIN_EMAIL_INTERVAL_MS) {
+      const waitTime = MIN_EMAIL_INTERVAL_MS - timeSinceLastSend;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    lastEmailSendTime = Date.now();
+
+    // Format feedback type for display
+    const typeLabels = {
+      'bug': 'Bug Report',
+      'feature': 'Feature Request',
+      'design': 'Design Suggestion',
+      'general': 'General Feedback'
+    };
+    const typeLabel = feedbackType ? (typeLabels[feedbackType] || feedbackType) : 'General Feedback';
+
+    // Build email subject
+    const subject = `[Feedback] ${typeLabel} - Live Music Curator`;
+
+    // Build email body
+    let body = `New feedback received:\n\n`;
+    body += `Type: ${typeLabel}\n`;
+    
+    if (userEmail) {
+      body += `From: ${userEmail}\n`;
+    } else {
+      body += `From: Anonymous\n`;
+    }
+    
+    if (userId) {
+      body += `User ID: ${userId}\n`;
+    } else {
+      body += `User ID: Not logged in\n`;
+    }
+    
+    body += `\nMessage:\n${message}\n\n`;
+    
+    body += `Context:\n`;
+    if (pageUrl) {
+      body += `Page: ${pageUrl}\n`;
+    }
+    if (userAgent) {
+      body += `Browser: ${userAgent}\n`;
+    }
+    body += `Timestamp: ${new Date().toISOString()}\n`;
+
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: [SUPPORT_EMAIL],
+      subject: subject,
+      text: body
+    });
+
+    if (error) {
+      // Handle rate limit errors - retry after a delay
+      if (error.message && error.message.includes('Too many requests')) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        lastEmailSendTime = Date.now();
+        
+        const retryResult = await resend.emails.send({
+          from: FROM_EMAIL,
+          to: [SUPPORT_EMAIL],
+          subject: subject,
+          text: body
+        });
+        
+        if (retryResult.error) {
+          return {
+            success: false,
+            error: retryResult.error.message || 'Failed to send email after retry'
+          };
+        }
+        return {
+          success: true,
+          messageId: retryResult.data?.id
+        };
+      }
+      
+      return {
+        success: false,
+        error: error.message || 'Failed to send email'
+      };
+    }
+
+    return {
+      success: true,
+      messageId: data?.id
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message || 'Unexpected error sending email'
+    };
+  }
+}
+
 module.exports = {
-  sendPlaylistEmail
+  sendPlaylistEmail,
+  sendFeedbackEmail
 };
