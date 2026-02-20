@@ -9,7 +9,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const { createClient } = require('@supabase/supabase-js');
 
 const { scrapeBandsintown } = require('./utils/bandsintownScraper');
-const { sendPlaylistEmail } = require('./utils/emailService');
+const { sendPlaylistEmail, sendFeedbackEmail } = require('./utils/emailService');
 // --- Logger Configuration ---
 // Get the log level from environment variables. Default to 'info' for production.
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
@@ -3171,6 +3171,116 @@ app.post('/api/email-playlist', async (req, res) => {
     logger.error('Error in /api/email-playlist:', error);
     return res.status(500).json({ 
       error: 'An error occurred. Please try again or contact us at livemusiccurator@gmail.com' 
+    });
+  }
+});
+
+/**
+ * Submit user feedback (bugs, feature requests, design suggestions, etc.)
+ */
+app.post('/api/feedback', async (req, res) => {
+  const { message, feedbackType, email } = req.body;
+  const userId = await getUserIdFromRequest(req);
+
+  // Validate message (required, max 1000 chars)
+  if (!message || typeof message !== 'string' || message.trim().length === 0) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Message is required.' 
+    });
+  }
+
+  if (message.length > 1000) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Message must be 1000 characters or less.' 
+    });
+  }
+
+  // Validate email format if provided
+  if (email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid email address format.' 
+      });
+    }
+  }
+
+  // Validate feedback type if provided
+  const validTypes = ['bug', 'feature', 'design', 'general'];
+  const normalizedType = feedbackType && validTypes.includes(feedbackType.toLowerCase()) 
+    ? feedbackType.toLowerCase() 
+    : null;
+
+  try {
+    // Get user agent and page URL from request headers
+    const userAgent = req.headers['user-agent'] || null;
+    const pageUrl = req.headers['referer'] || req.headers['origin'] || null;
+
+    // Determine user email (prefer form email, then logged-in user's email)
+    let userEmail = email || null;
+    if (!userEmail && userId) {
+      try {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (token) {
+          const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+          if (!error && user?.email) {
+            userEmail = user.email;
+          }
+        }
+      } catch (err) {
+        logger.debug(`Could not get user email from token: ${err.message}`);
+      }
+    }
+
+    // Insert feedback into database
+    const [feedback] = await sql`
+      INSERT INTO user_feedback (
+        user_id,
+        user_email,
+        feedback_type,
+        message,
+        user_agent,
+        page_url
+      )
+      VALUES (
+        ${userId || null},
+        ${userEmail || null},
+        ${normalizedType || null},
+        ${message.trim()},
+        ${userAgent || null},
+        ${pageUrl || null}
+      )
+      RETURNING id
+    `;
+
+    // Send email notification to support
+    const emailResult = await sendFeedbackEmail({
+      feedbackType: normalizedType,
+      message: message.trim(),
+      userEmail: userEmail,
+      userId: userId,
+      userAgent: userAgent,
+      pageUrl: pageUrl
+    });
+
+    if (!emailResult.success) {
+      // Log email failure but don't fail the request (feedback is saved in DB)
+      logger.warn(`Failed to send feedback email notification: ${emailResult.error}`);
+    }
+
+    return res.json({
+      success: true,
+      feedbackId: feedback.id
+    });
+
+  } catch (error) {
+    logger.error('Error in /api/feedback:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: 'An error occurred while submitting feedback. Please try again.' 
     });
   }
 });
